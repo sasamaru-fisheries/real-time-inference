@@ -269,6 +269,11 @@ Maven が使えない環境で依存 JAR を直接集める必要がある場合
 - **コマンド例**  
   Maven や Java のコマンドは、すべてターミナル（macOS なら Terminal.app、Windows なら PowerShell等）で実行します。
 
+- **推奨バージョンとダウンロード先**  
+  - JDK 17 (LTS): Eclipse Temurin 公式配布 – https://adoptium.net/temurin/releases/?version=17  
+  - Maven 3.9.x: Apache Maven Download – https://maven.apache.org/download.cgi  
+    インストール手順の詳細は各公式ドキュメント（例: Maven の “Installing Apache Maven” ガイド）を参照してください。
+
 ---
 
 ## よくある質問
