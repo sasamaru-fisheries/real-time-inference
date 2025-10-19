@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -33,6 +32,7 @@ import org.jpmml.model.PMMLUtil;
 public final class PMMLPredictor {
 
     private static final String MODEL_OPTION = "--model";
+    private static final String BATCH_OPTION = "--batch";
     private static final Path DEFAULT_MODEL_PATH = Path.of("model", "model.pmml");
 
     private static final String[] FEATURE_ORDER = {
@@ -57,35 +57,47 @@ public final class PMMLPredictor {
         Path resolvedModelPath = resolveModelPath(parsedInput.modelPath(), parsedInput.modelExplicit());
 
         Evaluator evaluator = loadEvaluator(resolvedModelPath);
-        Map<String, Object> featureValues = parseArguments(parsedInput.featureArgs());
+        List<double[]> featureVectors = parsedInput.featureVectors();
 
-        Map<FieldName, FieldValue> arguments = prepareArguments(evaluator, featureValues);
-        Map<FieldName, ?> results = evaluator.evaluate(arguments);
-
-        TargetField targetField = evaluator.getTargetFields().get(0);
-        FieldName targetFieldName = targetField.getName();
-        Object predictedValue = unwrapComputable(results.get(targetFieldName));
-
-        System.out.println("Input features (order: sepal_length, sepal_width, petal_length, petal_width):");
-        Arrays.stream(FEATURE_ORDER).forEach(name ->
-            System.out.printf(Locale.US, "  %-22s = %.2f%n", name, ((Number) featureValues.get(name)).doubleValue())
-        );
-        System.out.println();
-
-        System.out.printf("Predicted class id: %s%n", predictedValue);
-        System.out.printf("Predicted class label: %s%n", CLASS_LABELS.getOrDefault(String.valueOf(predictedValue), "unknown"));
-
-        System.out.println();
         System.out.println("Model loaded from: " + resolvedModelPath.toAbsolutePath());
         System.out.println();
-        System.out.println("Class probabilities:");
-        printProbabilities(results, evaluator.getOutputFields());
+
+        for (int i = 0; i < featureVectors.size(); i++) {
+            double[] features = featureVectors.get(i);
+            Map<FieldName, FieldValue> arguments = prepareArguments(evaluator, features);
+            Map<FieldName, ?> results = evaluator.evaluate(arguments);
+
+            TargetField targetField = evaluator.getTargetFields().get(0);
+            FieldName targetFieldName = targetField.getName();
+            Object predictedValue = unwrapComputable(results.get(targetFieldName));
+
+            if (featureVectors.size() > 1) {
+                System.out.printf("=== Sample %d ===%n", i + 1);
+            }
+
+            System.out.println("Input features (order: sepal_length, sepal_width, petal_length, petal_width):");
+            for (int j = 0; j < FEATURE_ORDER.length; j++) {
+                System.out.printf(Locale.US, "  %-22s = %.2f%n", FEATURE_ORDER[j], features[j]);
+            }
+            System.out.println();
+
+            System.out.printf("Predicted class id: %s%n", predictedValue);
+            System.out.printf("Predicted class label: %s%n", CLASS_LABELS.getOrDefault(String.valueOf(predictedValue), "unknown"));
+            System.out.println();
+            System.out.println("Class probabilities:");
+            printProbabilities(results, evaluator.getOutputFields());
+
+            if (i < featureVectors.size() - 1) {
+                System.out.println();
+            }
+        }
     }
 
     private static ParsedInput parseInput(String[] args) {
         Path modelPath = DEFAULT_MODEL_PATH;
         boolean explicitModelPath = false;
         List<String> featureArgs = new ArrayList<>();
+        Path batchPath = null;
 
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -95,15 +107,36 @@ public final class PMMLPredictor {
                 }
                 modelPath = Path.of(args[++i]);
                 explicitModelPath = true;
+            } else if (BATCH_OPTION.equals(arg)) {
+                if ((i + 1) >= args.length) {
+                    throw new IllegalArgumentException("--batch requires a file path argument.");
+                }
+                batchPath = Path.of(args[++i]);
             } else if (arg.startsWith(MODEL_OPTION + "=")) {
                 modelPath = Path.of(arg.substring((MODEL_OPTION + "=").length()));
                 explicitModelPath = true;
+            } else if (arg.startsWith(BATCH_OPTION + "=")) {
+                batchPath = Path.of(arg.substring((BATCH_OPTION + "=").length()));
             } else {
                 featureArgs.add(arg);
             }
         }
 
-        return new ParsedInput(modelPath, featureArgs.toArray(String[]::new), explicitModelPath);
+        List<double[]> featureVectors = new ArrayList<>();
+
+        if (!featureArgs.isEmpty()) {
+            featureVectors.add(parseFeatureVector(featureArgs.toArray(String[]::new)));
+        }
+
+        if (batchPath != null) {
+            featureVectors.addAll(readBatchFile(batchPath));
+        }
+
+        if (featureVectors.isEmpty()) {
+            featureVectors.add(new double[] {5.1d, 3.5d, 1.4d, 0.2d});
+        }
+
+        return new ParsedInput(modelPath, featureVectors, explicitModelPath);
     }
 
     private static Path resolveModelPath(Path modelPath, boolean explicitModelPath) throws IOException {
@@ -137,34 +170,16 @@ public final class PMMLPredictor {
         return evaluator;
     }
 
-    private static Map<String, Object> parseArguments(String[] args) {
-        Map<String, Object> values = new LinkedHashMap<>();
-
-        if (args.length != 0 && args.length != FEATURE_ORDER.length) {
-            throw new IllegalArgumentException(
-                "Provide exactly four values (sepal_length sepal_width petal_length petal_width) or no values to use defaults.");
-        }
-
-        if (args.length == 0) {
-            values.put("sepal length (cm)", 5.1d);
-            values.put("sepal width (cm)", 3.5d);
-            values.put("petal length (cm)", 1.4d);
-            values.put("petal width (cm)", 0.2d);
-            return values;
-        }
-
+    private static Map<FieldName, FieldValue> prepareArguments(Evaluator evaluator, double[] featureValues) {
+        Map<String, Object> featureMap = new LinkedHashMap<>();
         for (int i = 0; i < FEATURE_ORDER.length; i++) {
-            double parsedValue = Double.parseDouble(args[i]);
-            values.put(FEATURE_ORDER[i], parsedValue);
+            featureMap.put(FEATURE_ORDER[i], featureValues[i]);
         }
-        return values;
-    }
 
-    private static Map<FieldName, FieldValue> prepareArguments(Evaluator evaluator, Map<String, Object> featureValues) {
         Map<FieldName, FieldValue> arguments = new LinkedHashMap<>();
         for (InputField inputField : evaluator.getInputFields()) {
             FieldName fieldName = inputField.getName();
-            Object rawValue = featureValues.get(fieldName.getValue());
+            Object rawValue = featureMap.get(fieldName.getValue());
             if (rawValue == null) {
                 throw new IllegalArgumentException("Missing value for required field: " + fieldName.getValue());
             }
@@ -204,5 +219,50 @@ public final class PMMLPredictor {
         return value;
     }
 
-    private record ParsedInput(Path modelPath, String[] featureArgs, boolean modelExplicit) { }
+    private static double[] parseFeatureVector(String[] args) {
+        if (args.length != FEATURE_ORDER.length) {
+            throw new IllegalArgumentException(
+                "Provide exactly four values (sepal_length sepal_width petal_length petal_width) or use --batch for multiple samples.");
+        }
+        double[] vector = new double[FEATURE_ORDER.length];
+        for (int i = 0; i < FEATURE_ORDER.length; i++) {
+            vector[i] = Double.parseDouble(args[i]);
+        }
+        return vector;
+    }
+
+    private static List<double[]> readBatchFile(Path batchPath) {
+        Path candidate = batchPath;
+        if (!Files.exists(candidate)) {
+            Path parentCandidate = Path.of("..").resolve(batchPath);
+            if (Files.exists(parentCandidate)) {
+                candidate = parentCandidate;
+            }
+        }
+
+        if (!Files.exists(candidate)) {
+            throw new IllegalArgumentException("Batch file not found: " + batchPath);
+        }
+
+        List<double[]> vectors = new ArrayList<>();
+        try {
+            List<String> lines = Files.readAllLines(candidate);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                String[] parts = trimmed.split("[,\\s]+");
+                if (parts.length != FEATURE_ORDER.length) {
+                    throw new IllegalArgumentException("Invalid line in batch file (expected 4 values): " + line);
+                }
+                vectors.add(parseFeatureVector(parts));
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to read batch file: " + batchPath, ex);
+        }
+        return vectors;
+    }
+
+    private record ParsedInput(Path modelPath, List<double[]> featureVectors, boolean modelExplicit) { }
 }

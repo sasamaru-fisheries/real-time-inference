@@ -105,6 +105,7 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
    ```
 
    成功すると `model/model.pmml` が更新され、最新モデルが保存されます（同時に `pmml-standalone/model/model.pmml` にもコピーされます）。
+   さらに `model/model.onnx` も生成され、ONNX 推論で利用できます。
 
 3. **Java アプリ (JAR) のビルド**
 
@@ -136,6 +137,14 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
    引数は順に `sepal length`, `sepal width`, `petal length`, `petal width` です。  
    値を変えることで任意の測定値に対する予測結果が得られます。
 
+6. **複数件をまとめて推論 (PMML)**
+
+   ```bash
+   java -jar pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar --model model/model.pmml --batch samples.txt
+   ```
+
+   `samples.txt` には 1 行につき 4 つの値（空白もしくはカンマ区切り）を記載します。`#` で始まる行や空行は無視されます。
+
 ---
 
 ### ONNX 版 CLI の実行
@@ -148,6 +157,9 @@ java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor -
 
 # 特徴量を指定
 java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model model/model.onnx 6.1 2.8 4.7 1.2
+
+# 複数件を一括で推論
+java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model model/model.onnx --batch samples.txt
 ```
 
 `onnxruntime` のネイティブライブラリも fat JAR に含まれるため、追加セットアップは不要です。
@@ -163,10 +175,80 @@ cd pmml-standalone
 # 必要なら model/model.pmml を最新に差し替える（train.py の出力をコピー）
 javac -cp "libs/*" PMMLPredictor.java
 java -cp ".:libs/*" PMMLPredictor              # 既定値で推論
-java -cp ".:libs/*" PMMLPredictor 6.1 2.8 4.7 1.2  # 引数付き
+java -cp ".:libs/*" PMMLPredictor --model model/model.pmml 6.1 2.8 4.7 1.2  # 引数付き
+java -cp ".:libs/*" PMMLPredictor --model model/model.pmml --batch samples.txt
 ```
 
 `libs/` 以下の JAR を実行環境にまとめて持ち込めば、JDK だけで同じ予測を再現できます。
+
+---
+
+## standalone 実行（Maven なし）の詳細手順
+
+Maven が使えないマシンで推論を行いたい場合は、以下のファイル一式をコピーしてください。
+
+```
+pmml-standalone/
+  ├── libs/         # 依存ライブラリ（PMML/ONNX 共通）
+  ├── PMMLPredictor.java
+  └── model/
+       ├── model.pmml
+       └── model.onnx (必要ならコピー)
+```
+
+1. **JDK の確認**  
+   スタンドアロン構成は Java 17 を想定しています。`java -version` で確認してください。
+
+2. **PMML 推論をビルド & 実行**
+
+   ```bash
+   cd pmml-standalone
+   javac -cp "libs/*" PMMLPredictor.java
+   java -cp ".:libs/*" PMMLPredictor --model model/model.pmml
+   java -cp ".:libs/*" PMMLPredictor --model model/model.pmml 6.1 2.8 4.7 1.2
+   ```
+
+3. **ONNX 推論を行いたい場合**  
+   `pmml-demo/src/main/java/com/example/OnnxPredictor.java` を同じフォルダにコピーしてコンパイルし実行します。
+
+   ```bash
+   cp ../pmml-demo/src/main/java/com/example/OnnxPredictor.java .
+javac -cp "libs/*" OnnxPredictor.java
+java -cp ".:libs/*" OnnxPredictor --model model/model.onnx
+java -cp ".:libs/*" OnnxPredictor --model model/model.onnx 6.1 2.8 4.7 1.2
+java -cp ".:libs/*" OnnxPredictor --model model/model.onnx --batch samples.txt
+```
+
+   `libs/` に `onnxruntime-*.jar` が含まれていれば、追加の `.so/.dylib/.dll` を用意する必要はありません。
+
+4. **依存ライブラリを更新したい場合**  
+   Maven が使える環境で一度 `mvn dependency:copy-dependencies -DincludeScope=compile -DoutputDirectory=pmml-standalone/libs` を実行すると `libs/` を再生成できます。
+
+---
+
+### 手動でライブラリを集める場合
+
+Maven が使えない環境で依存 JAR を直接集める必要がある場合は、下表のリンクからダウンロードして `pmml-standalone/libs/` に配置してください（バージョンは必ず一致させる）。
+
+| ライブラリ | 役割 | ダウンロードリンク |
+| --- | --- | --- |
+| `org.jpmml:pmml-evaluator:1.5.15` | PMML 推論エンジン | https://repo1.maven.org/maven2/org/jpmml/pmml-evaluator/1.5.15/pmml-evaluator-1.5.15.jar |
+| `org.jpmml:pmml-model:1.5.15` | PMML モデル定義の読み書き | https://repo1.maven.org/maven2/org/jpmml/pmml-model/1.5.15/pmml-model-1.5.15.jar |
+| `org.glassfish.jaxb:jaxb-runtime:2.3.3` | JAXB 実行時（XML バインディング） | https://repo1.maven.org/maven2/org/glassfish/jaxb/jaxb-runtime/2.3.3/jaxb-runtime-2.3.3.jar |
+| `javax.xml.bind:jaxb-api:2.3.1` | JAXB API 定義 | https://repo1.maven.org/maven2/javax/xml/bind/jaxb-api/2.3.1/jaxb-api-2.3.1.jar |
+| `jakarta.xml.bind:jakarta.xml.bind-api:2.3.3` | 最新 JAXB API（互換補助） | https://repo1.maven.org/maven2/jakarta/xml/bind/jakarta.xml.bind-api/2.3.3/jakarta.xml.bind-api-2.3.3.jar |
+| `com.fasterxml.jackson.core:jackson-core:2.17.2` | JSON 基盤処理 | https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar |
+| `com.fasterxml.jackson.core:jackson-databind:2.17.2` | JSON <-> オブジェクト変換 | https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-2.17.2.jar |
+| `com.fasterxml.jackson.core:jackson-annotations:2.17.2` | Jackson アノテーション定義 | https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.17.2/jackson-annotations-2.17.2.jar |
+| `com.microsoft.onnxruntime:onnxruntime:1.19.2` | ONNX 推論ランタイム（ネイティブ同梱） | https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime/1.19.2/onnxruntime-1.19.2.jar |
+| `com.google.guava:guava:30.1-jre` | ユーティリティ（JPMML が利用） | https://repo1.maven.org/maven2/com/google/guava/guava/30.1-jre/guava-30.1-jre.jar |
+| `com.google.guava:failureaccess:1.0.1` | Guava の補助パッケージ | https://repo1.maven.org/maven2/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar |
+| `org.apache.commons:commons-math3:3.6.1` | 数値計算ユーティリティ | https://repo1.maven.org/maven2/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar |
+| `com.sun.istack:istack-commons-runtime:3.0.11` | JAXB 下位ユーティリティ | https://repo1.maven.org/maven2/com/sun/istack/istack-commons-runtime/3.0.11/istack-commons-runtime-3.0.11.jar |
+| `javax.activation:javax.activation-api:1.2.0` | MIME/Activation API | https://repo1.maven.org/maven2/javax/activation/javax.activation-api/1.2.0/javax.activation-api-1.2.0.jar |
+| `org.glassfish.jaxb:txw2:2.3.3` | JAXB の XML Writer コンポーネント | https://repo1.maven.org/maven2/org/glassfish/jaxb/txw2/2.3.3/txw2-2.3.3.jar |
+
+ダウンロード後は `libs/` 配下にまとめ、`javac -cp "libs/*"` / `java -cp ".:libs/*"` でクラスパス指定すれば Maven なしでも推論可能です。
 
 ---
 

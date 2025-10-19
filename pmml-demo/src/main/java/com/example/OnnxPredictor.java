@@ -26,6 +26,7 @@ import ai.onnxruntime.OrtSession.RunOptions;
 public final class OnnxPredictor {
 
     private static final String MODEL_OPTION = "--model";
+    private static final String BATCH_OPTION = "--batch";
     private static final Path DEFAULT_MODEL_PATH = Path.of("model", "model.onnx");
 
     private static final String[] FEATURE_ORDER = {
@@ -49,36 +50,48 @@ public final class OnnxPredictor {
         ParsedInput parsedInput = parseInput(args);
         Path resolvedModelPath = resolveModelPath(parsedInput.modelPath(), parsedInput.modelExplicit());
 
-        float[] featureValues = parsedInput.featureValues();
+        List<float[]> featureVectors = parsedInput.featureVectors();
 
         try (OrtEnvironment env = OrtEnvironment.getEnvironment();
              OrtSession.SessionOptions options = new OrtSession.SessionOptions();
              OrtSession session = env.createSession(resolvedModelPath.toString(), options)) {
 
             String inputName = session.getInputNames().iterator().next();
-            float[][] inputData = new float[][] { featureValues };
 
-            try (OnnxTensor tensor = OnnxTensor.createTensor(env, inputData);
-                 RunOptions runOptions = new RunOptions();
-                 OrtSession.Result result = session.run(Map.of(inputName, tensor), runOptions)) {
+            for (int sampleIndex = 0; sampleIndex < featureVectors.size(); sampleIndex++) {
+                float[] featureValues = featureVectors.get(sampleIndex);
+                float[][] inputData = new float[][] { featureValues };
 
-                PredictionOutputs outputs = extractOutputs(result);
-                long predictedClass = outputs.predictedClass();
+                try (OnnxTensor tensor = OnnxTensor.createTensor(env, inputData);
+                     RunOptions runOptions = new RunOptions();
+                     OrtSession.Result result = session.run(Map.of(inputName, tensor), runOptions)) {
 
-                System.out.println("Input features (order: sepal_length, sepal_width, petal_length, petal_width):");
-                for (int i = 0; i < FEATURE_ORDER.length; i++) {
-                    System.out.printf(Locale.US, "  %-22s = %.2f%n", FEATURE_ORDER[i], featureValues[i]);
-                }
+                    PredictionOutputs outputs = extractOutputs(result);
+                    long predictedClass = outputs.predictedClass();
 
-                System.out.println();
-                System.out.printf("Predicted class id: %d%n", predictedClass);
-                System.out.printf("Predicted class label: %s%n", CLASS_LABELS.getOrDefault(String.valueOf(predictedClass), "unknown"));
-                System.out.println();
-                System.out.println("Model loaded from: " + resolvedModelPath.toAbsolutePath());
-                System.out.println();
-                System.out.println("Class probabilities:");
-                for (int i = 0; i < outputs.probabilities().length; i++) {
-                    System.out.printf(Locale.US, "  %-16s : %.4f%n", "probability(" + i + ")", outputs.probabilities()[i]);
+                    if (featureVectors.size() > 1) {
+                        System.out.printf("=== Sample %d ===%n", sampleIndex + 1);
+                    }
+
+                    System.out.println("Input features (order: sepal_length, sepal_width, petal_length, petal_width):");
+                    for (int i = 0; i < FEATURE_ORDER.length; i++) {
+                        System.out.printf(Locale.US, "  %-22s = %.2f%n", FEATURE_ORDER[i], featureValues[i]);
+                    }
+
+                    System.out.println();
+                    System.out.printf("Predicted class id: %d%n", predictedClass);
+                    System.out.printf("Predicted class label: %s%n", CLASS_LABELS.getOrDefault(String.valueOf(predictedClass), "unknown"));
+                    System.out.println();
+                    System.out.println("Model loaded from: " + resolvedModelPath.toAbsolutePath());
+                    System.out.println();
+                    System.out.println("Class probabilities:");
+                    for (int i = 0; i < outputs.probabilities().length; i++) {
+                        System.out.printf(Locale.US, "  %-16s : %.4f%n", "probability(" + i + ")", outputs.probabilities()[i]);
+                    }
+
+                    if (sampleIndex < featureVectors.size() - 1) {
+                        System.out.println();
+                    }
                 }
             }
         }
@@ -88,6 +101,7 @@ public final class OnnxPredictor {
         Path modelPath = DEFAULT_MODEL_PATH;
         boolean explicitModelPath = false;
         List<String> featureArgs = new ArrayList<>();
+        Path batchPath = null;
 
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -97,16 +111,36 @@ public final class OnnxPredictor {
                 }
                 modelPath = Path.of(args[++i]);
                 explicitModelPath = true;
+            } else if (BATCH_OPTION.equals(arg)) {
+                if ((i + 1) >= args.length) {
+                    throw new IllegalArgumentException("--batch requires a file path argument.");
+                }
+                batchPath = Path.of(args[++i]);
             } else if (arg.startsWith(MODEL_OPTION + "=")) {
                 modelPath = Path.of(arg.substring((MODEL_OPTION + "=").length()));
                 explicitModelPath = true;
+            } else if (arg.startsWith(BATCH_OPTION + "=")) {
+                batchPath = Path.of(arg.substring((BATCH_OPTION + "=").length()));
             } else {
                 featureArgs.add(arg);
             }
         }
 
-        float[] featureValues = parseFeatures(featureArgs.toArray(String[]::new));
-        return new ParsedInput(modelPath, featureValues, explicitModelPath);
+        List<float[]> featureVectors = new ArrayList<>();
+
+        if (!featureArgs.isEmpty()) {
+            featureVectors.add(parseFeatures(featureArgs.toArray(String[]::new)));
+        }
+
+        if (batchPath != null) {
+            featureVectors.addAll(readBatchFile(batchPath));
+        }
+
+        if (featureVectors.isEmpty()) {
+            featureVectors.add(parseFeatures(new String[] {"5.1", "3.5", "1.4", "0.2"}));
+        }
+
+        return new ParsedInput(modelPath, featureVectors, explicitModelPath);
     }
 
     private static float[] parseFeatures(String[] args) {
@@ -245,7 +279,40 @@ public final class OnnxPredictor {
         return result;
     }
 
-    private record ParsedInput(Path modelPath, float[] featureValues, boolean modelExplicit) { }
+    private static List<float[]> readBatchFile(Path batchPath) {
+        Path candidate = batchPath;
+        if (!Files.exists(candidate)) {
+            Path parentCandidate = Path.of("..").resolve(batchPath);
+            if (Files.exists(parentCandidate)) {
+                candidate = parentCandidate;
+            }
+        }
+
+        if (!Files.exists(candidate)) {
+            throw new IllegalArgumentException("Batch file not found: " + batchPath);
+        }
+
+        List<float[]> vectors = new ArrayList<>();
+        try {
+            List<String> lines = Files.readAllLines(candidate);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    continue;
+                }
+                String[] parts = trimmed.split("[,\\s]+");
+                if (parts.length != FEATURE_ORDER.length) {
+                    throw new IllegalArgumentException("Invalid line in batch file (expected 4 values): " + line);
+                }
+                vectors.add(parseFeatures(parts));
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to read batch file: " + batchPath, ex);
+        }
+        return vectors;
+    }
+
+    private record ParsedInput(Path modelPath, List<float[]> featureVectors, boolean modelExplicit) { }
 
     private record PredictionOutputs(long predictedClass, double[] probabilities) { }
 }
