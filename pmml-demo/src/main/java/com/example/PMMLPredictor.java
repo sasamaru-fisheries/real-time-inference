@@ -2,8 +2,11 @@ package com.example;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +32,9 @@ import org.jpmml.model.PMMLUtil;
  */
 public final class PMMLPredictor {
 
+    private static final String MODEL_OPTION = "--model";
+    private static final Path DEFAULT_MODEL_PATH = Path.of("model", "model.pmml");
+
     private static final String[] FEATURE_ORDER = {
         "sepal length (cm)",
         "sepal width (cm)",
@@ -47,8 +53,11 @@ public final class PMMLPredictor {
     }
 
     public static void main(String[] args) throws Exception {
-        Evaluator evaluator = loadEvaluator();
-        Map<String, Object> featureValues = parseArguments(args);
+        ParsedInput parsedInput = parseInput(args);
+        Path resolvedModelPath = resolveModelPath(parsedInput.modelPath(), parsedInput.modelExplicit());
+
+        Evaluator evaluator = loadEvaluator(resolvedModelPath);
+        Map<String, Object> featureValues = parseArguments(parsedInput.featureArgs());
 
         Map<FieldName, FieldValue> arguments = prepareArguments(evaluator, featureValues);
         Map<FieldName, ?> results = evaluator.evaluate(arguments);
@@ -67,16 +76,58 @@ public final class PMMLPredictor {
         System.out.printf("Predicted class label: %s%n", CLASS_LABELS.getOrDefault(String.valueOf(predictedValue), "unknown"));
 
         System.out.println();
+        System.out.println("Model loaded from: " + resolvedModelPath.toAbsolutePath());
+        System.out.println();
         System.out.println("Class probabilities:");
         printProbabilities(results, evaluator.getOutputFields());
     }
 
-    private static Evaluator loadEvaluator() throws Exception {
-        PMML pmml;
-        try (InputStream is = PMMLPredictor.class.getResourceAsStream("/model.pmml")) {
-            if (is == null) {
-                throw new IOException("Could not find model.pmml on the classpath.");
+    private static ParsedInput parseInput(String[] args) {
+        Path modelPath = DEFAULT_MODEL_PATH;
+        boolean explicitModelPath = false;
+        List<String> featureArgs = new ArrayList<>();
+
+        for (int i = 0; i < args.length; i++) {
+            String arg = args[i];
+            if (MODEL_OPTION.equals(arg)) {
+                if ((i + 1) >= args.length) {
+                    throw new IllegalArgumentException("--model requires a file path argument.");
+                }
+                modelPath = Path.of(args[++i]);
+                explicitModelPath = true;
+            } else if (arg.startsWith(MODEL_OPTION + "=")) {
+                modelPath = Path.of(arg.substring((MODEL_OPTION + "=").length()));
+                explicitModelPath = true;
+            } else {
+                featureArgs.add(arg);
             }
+        }
+
+        return new ParsedInput(modelPath, featureArgs.toArray(String[]::new), explicitModelPath);
+    }
+
+    private static Path resolveModelPath(Path modelPath, boolean explicitModelPath) throws IOException {
+        if (Files.exists(modelPath)) {
+            return modelPath;
+        }
+
+        if (explicitModelPath || modelPath.isAbsolute()) {
+            throw new IOException("Could not find PMML model file at: " + modelPath.toAbsolutePath());
+        }
+
+        Path parentCandidate = Path.of("..").resolve(modelPath);
+        if (Files.exists(parentCandidate)) {
+            return parentCandidate;
+        }
+
+        throw new IOException(
+            "Could not find PMML model file. Checked: " + modelPath.toAbsolutePath() + " and " + parentCandidate.toAbsolutePath());
+    }
+
+    private static Evaluator loadEvaluator(Path resolvedModelPath) throws Exception {
+
+        PMML pmml;
+        try (InputStream is = Files.newInputStream(resolvedModelPath)) {
             pmml = PMMLUtil.unmarshal(is);
         }
 
@@ -147,9 +198,11 @@ public final class PMMLPredictor {
     }
 
     private static Object unwrapComputable(Object value) {
-        if (value instanceof Computable) {
-            return ((Computable) value).getResult();
+        if (value instanceof Computable computable) {
+            return computable.getResult();
         }
         return value;
     }
+
+    private record ParsedInput(Path modelPath, String[] featureArgs, boolean modelExplicit) { }
 }
