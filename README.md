@@ -14,19 +14,30 @@
 ├── model
 │   ├── model.pmml
 │   └── model.onnx
-├── pmml-demo
+├── pmml-predictor
 │   ├── pom.xml
 │   └── src
 │       ├── main
 │       │   └── java
-│       │       ├── com/example/PMMLPredictor.java
-│       │       └── com/example/OnnxPredictor.java
+│       │       └── com/example/PMMLPredictor.java
 │       └── test (未使用)
-└── pmml-standalone
+├── onnx-predictor
+│   ├── pom.xml
+│   └── src
+│       └── main
+│           └── java
+│               └── com/example/OnnxPredictor.java
+├── standalone-pmml
+│   ├── libs
+│   ├── model
+│   │   └── model.pmml
+│   └── PMMLPredictor.java
+└── standalone-onnx
     ├── libs
+    │   └── onnxruntime-*.jar
     ├── model
-    │   └── model.pmml
-    └── PMMLPredictor.java
+    │   └── model.onnx
+    └── OnnxPredictor.java
 ```
 
 - `README.md`  
@@ -35,17 +46,18 @@
 - `train.py`  
   Python スクリプト。主な構成要素は次のとおりです。  
   - `build_pipeline` 関数: `RandomForestClassifier` を含む `PMMLPipeline` を生成。  
+    標準化（`StandardScaler`）を前段に挟んでおり、推論時にも同じ前処理が適用されます。  
   - `export_pmml` 関数: Iris データを読み込み、学習 → `sklearn2pmml` で PMML を出力（`model/model.pmml` に保存）。  
   - `main` 関数: プロジェクトルートからの相対パスを計算し、学習と PMML 書き出しを実行。  
-  実行すると `model/model.pmml` に最新モデルが書き出され、スタンドアロン用 (`pmml-standalone/model/model.pmml`) にもコピーされます。
+  実行すると `model/model.pmml` / `model/model.onnx` に最新モデルが書き出され、スタンドアロン用 (`standalone-pmml/model/model.pmml`, `standalone-onnx/model/model.onnx`) にもコピーされます。
 
-- `pmml-demo/pom.xml`  
+- `pmml-predictor/pom.xml`  
   Maven の設定ファイル。  
   - `<dependencies>` セクションで JPMML ライブラリや JAXB、Jackson を宣言。  
-  - `<build>` 内で `maven-shade-plugin` を設定し、依存ライブラリ込みの fat JAR（`target/pmml-demo-1.0-SNAPSHOT.jar`）を作成。  
+  - `<build>` 内で `maven-shade-plugin` を設定し、依存ライブラリ込みの fat JAR（`target/pmml-predictor-1.0-SNAPSHOT.jar`）を作成。  
   - `exec-maven-plugin` により `mvn exec:java` で `com.example.PMMLPredictor` を直接起動できるように設定。
 
-- `pmml-demo/src/main/java/com/example/PMMLPredictor.java`  
+- `pmml-predictor/src/main/java/com/example/PMMLPredictor.java`  
   Java のエントリーポイント。細部の役割は以下の通りです。  
   - `--model <path>` フラグ（または `--model=...`）で外部 PMML ファイルを指定。指定が無い場合は実行ディレクトリから `model/model.pmml` を探す。  
   - `loadEvaluator()` が指定ファイルを読み込み、`ModelEvaluatorBuilder` で推論器を初期化。  
@@ -54,11 +66,11 @@
   - `printProbabilities()` で推論結果のクラス別確率を整形表示。  
   - `main()` では引数読み取り→推論→結果表示までを順に実行。
 
-- `pmml-demo/src/main/java/com/example/OnnxPredictor.java`  
-  ONNX Runtime を利用した推論クラス。  
-  - `--model <path>` フラグで外部 ONNX ファイル（デフォルトは `model/model.onnx`）を指定。  
-  - ONNX Runtime に入力テンソルを渡し、出力されたラベル・確率を整形表示。  
-  - PMML と同じく順序付きの 4 特徴量（花の測定値）を CLI から受け付ける。
+- `onnx-predictor/pom.xml`  
+  ONNX 用の最小 Maven プロジェクト。`onnxruntime` だけを依存として取り込み、`com.example.OnnxPredictor` をエントリーポイントに設定します。
+
+- `onnx-predictor/src/main/java/com/example/OnnxPredictor.java`  
+  ONNX Runtime を利用した推論クラス。`--model` で ONNX ファイルを指定し、PMML 版と同じ引数／バッチ形式で推論を実行できます。
 
 - `model/model.pmml`  
   `train.py` が生成する最新の PMML モデル本体（XML）。Java アプリはこのファイルを外部から読み込みます。
@@ -66,17 +78,17 @@
 - `model/model.onnx`  
   `train.py` が生成する ONNX 形式のモデル。`OnnxPredictor` から読み込んで推論を行います。
 
-- `pmml-demo/src/test`  
+- `pmml-predictor/src/test`  
   Maven の標準構成で自動生成された空ディレクトリ。現在テストコードは置いていません。
 
-- `pmml-demo/target/`  
-  Maven がビルド時に作る作業ディレクトリ（`mvn package` 後に生成）。`pmml-demo-1.0-SNAPSHOT.jar` や中間ファイルが入ります。不要になったら削除しても問題ありません。
+- `pmml-predictor/target/` および `onnx-predictor/target/`  
+  Maven がビルド時に作る作業ディレクトリ（`mvn package` 後に生成）。`pmml-predictor-1.0-SNAPSHOT.jar` / `onnx-predictor-1.0-SNAPSHOT.jar` や中間ファイルが入ります。不要になったら削除しても問題ありません。
 
-- `pmml-standalone/`  
-  Maven を使わずに推論を実行するための手動セットアップ。  
-  - `PMMLPredictor.java`: 依存 JAR を自分で指定してコンパイル・実行する形のスタンドアロン版。  
-  - `model/model.pmml`: `train.py` からコピーされる最新モデル。  
-  - `libs/`: `mvn dependency:copy-dependencies` で収集した外部ライブラリ群。Maven が使えない環境へ丸ごと持ち込めば、そのまま `javac` / `java` で実行可能。
+- `standalone-pmml/`  
+  Maven を使わずに PMML 推論を実行するための構成。`PMMLPredictor.java` と JPMML 系 JAR（`libs/`）だけを含みます。
+
+- `standalone-onnx/`  
+  Maven を使わずに ONNX 推論を実行するための構成。`OnnxPredictor.java` と `onnxruntime` JAR（`libs/`）のみを含みます。
 
 ---
 
@@ -95,7 +107,7 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
 1. **Python 依存関係のインストール**
 
    ```bash
-   python3 -m pip install pandas scikit-learn sklearn2pmml
+   python3 -m pip install pandas scikit-learn sklearn2pmml skl2onnx packaging
    ```
 
 2. **PMML モデルの生成**
@@ -104,34 +116,31 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
    python3 train.py
    ```
 
-   成功すると `model/model.pmml` が更新され、最新モデルが保存されます（同時に `pmml-standalone/model/model.pmml` にもコピーされます）。
+   成功すると `model/model.pmml` が更新され、最新モデルが保存されます（同時に `standalone-pmml/model/model.pmml` にもコピーされます）。
    さらに `model/model.onnx` も生成され、ONNX 推論で利用できます。
 
-3. **Java アプリ (JAR) のビルド**
+3. **PMML 用 JAR のビルド**
 
    ```bash
-   cd pmml-demo
+   cd pmml-predictor
    mvn -q clean package
+   cd ..
    ```
 
-   `target/pmml-demo-1.0-SNAPSHOT.jar` が生成されます。依存ライブラリ込みの「fat JAR」なので、Java が動く環境ならどこでも単独で実行できます。
+   `pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar` が生成されます。依存ライブラリ込みの「fat JAR」なので、Java が動く環境ならどこでも単独で実行できます。
 
-   > メモ: Maven から直接実行する場合は  
-   > `mvn -q exec:java -Dexec.args="--model ../model/model.pmml"`  
-   > のように `--model` オプションで外部 PMML のパスを指定してください。
-
-4. **推論の実行 (デフォルト入力)**
+4. **PMML 推論 (デフォルト入力)**
 
    ```bash
-   java -jar pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar --model model/model.pmml
+   java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar --model model/model.pmml
    ```
 
    Iris setosa に近い標準入力で推論が行われ、クラス判定と確率が表示されます。
 
-5. **推論の実行 (特徴量を指定)**
+5. **PMML 推論 (特徴量を指定)**
 
    ```bash
-    java -jar pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar --model model/model.pmml 6.1 2.8 4.7 1.2
+   java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar --model model/model.pmml 6.1 2.8 4.7 1.2
    ```
 
    引数は順に `sepal length`, `sepal width`, `petal length`, `petal width` です。  
@@ -140,7 +149,7 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
 6. **複数件をまとめて推論 (PMML)**
 
    ```bash
-   java -jar pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar --model model/model.pmml --batch samples.txt
+   java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar --model model/model.pmml --batch samples.txt
    ```
 
    `samples.txt` には 1 行につき 4 つの値（空白もしくはカンマ区切り）を記載します。`#` で始まる行や空行は無視されます。
@@ -151,15 +160,23 @@ macOS や Linux であれば、Homebrew / apt などでインストールして�
 
 ONNX 推論は同じ JAR に含まれている `com.example.OnnxPredictor` を呼び出します。
 
+事前に以下で JAR を作成してください:
+
+```bash
+cd onnx-predictor
+mvn -q clean package
+cd ..
+```
+
 ```bash
 # 既定値で推論
-java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model model/model.onnx
+java -jar onnx-predictor/target/onnx-predictor-1.0-SNAPSHOT.jar --model model/model.onnx
 
 # 特徴量を指定
-java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model model/model.onnx 6.1 2.8 4.7 1.2
+java -jar onnx-predictor/target/onnx-predictor-1.0-SNAPSHOT.jar --model model/model.onnx 6.1 2.8 4.7 1.2
 
 # 複数件を一括で推論
-java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model model/model.onnx --batch samples.txt
+java -jar onnx-predictor/target/onnx-predictor-1.0-SNAPSHOT.jar --model model/model.onnx --batch samples.txt
 ```
 
 `onnxruntime` のネイティブライブラリも fat JAR に含まれるため、追加セットアップは不要です。
@@ -168,10 +185,10 @@ java -cp pmml-demo/target/pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor -
 
 ## Maven を使わない実行方法
 
-`pmml-standalone` ディレクトリには、必要な外部ライブラリ（JAR）を同梱した手動構成を用意しています。Maven が利用できない環境では次の手順で推論を実行できます。
+`standalone-pmml` / `standalone-onnx` には、それぞれの推論方式に必要な JAR を同梱した構成を用意しています。Maven が利用できない環境では次の手順で推論を実行できます（以下は PMML 版の例）。
 
 ```bash
-cd pmml-standalone
+cd standalone-pmml
 # 必要なら model/model.pmml を最新に差し替える（train.py の出力をコピー）
 javac -cp "libs/*" PMMLPredictor.java
 java -cp ".:libs/*" PMMLPredictor              # 既定値で推論
@@ -188,12 +205,16 @@ java -cp ".:libs/*" PMMLPredictor --model model/model.pmml --batch samples.txt
 Maven が使えないマシンで推論を行いたい場合は、以下のファイル一式をコピーしてください。
 
 ```
-pmml-standalone/
-  ├── libs/         # 依存ライブラリ（PMML/ONNX 共通）
+standalone-pmml/
+  ├── libs/         # JPMML 関連のみ
   ├── PMMLPredictor.java
   └── model/
-       ├── model.pmml
-       └── model.onnx (必要ならコピー)
+       └── model.pmml
+standalone-onnx/
+  ├── libs/         # onnxruntime のみ
+  ├── OnnxPredictor.java
+  └── model/
+       └── model.onnx
 ```
 
 1. **JDK の確認**  
@@ -202,33 +223,36 @@ pmml-standalone/
 2. **PMML 推論をビルド & 実行**
 
    ```bash
-   cd pmml-standalone
+   cd standalone-pmml
    javac -cp "libs/*" PMMLPredictor.java
    java -cp ".:libs/*" PMMLPredictor --model model/model.pmml
    java -cp ".:libs/*" PMMLPredictor --model model/model.pmml 6.1 2.8 4.7 1.2
    ```
 
 3. **ONNX 推論を行いたい場合**  
-   `pmml-demo/src/main/java/com/example/OnnxPredictor.java` を同じフォルダにコピーしてコンパイルし実行します。
+   `standalone-onnx` ディレクトリへ移動し、同梱の `OnnxPredictor.java` と `onnxruntime` のみでコンパイル・実行します。
 
    ```bash
-   cp ../pmml-demo/src/main/java/com/example/OnnxPredictor.java .
-javac -cp "libs/*" OnnxPredictor.java
-java -cp ".:libs/*" OnnxPredictor --model model/model.onnx
-java -cp ".:libs/*" OnnxPredictor --model model/model.onnx 6.1 2.8 4.7 1.2
-java -cp ".:libs/*" OnnxPredictor --model model/model.onnx --batch samples.txt
-```
+   cd standalone-onnx
+   javac -cp "libs/*" OnnxPredictor.java
+   java -cp ".:libs/*" OnnxPredictor --model model/model.onnx
+   java -cp ".:libs/*" OnnxPredictor --model model/model.onnx 6.1 2.8 4.7 1.2
+   java -cp ".:libs/*" OnnxPredictor --model model/model.onnx --batch samples.txt
+   ```
 
    `libs/` に `onnxruntime-*.jar` が含まれていれば、追加の `.so/.dylib/.dll` を用意する必要はありません。
 
 4. **依存ライブラリを更新したい場合**  
-   Maven が使える環境で一度 `mvn dependency:copy-dependencies -DincludeScope=compile -DoutputDirectory=pmml-standalone/libs` を実行すると `libs/` を再生成できます。
+   Maven が使える環境で一度  
+   `mvn dependency:copy-dependencies -DincludeScope=compile -DoutputDirectory=standalone-pmml/libs`  
+   `mvn dependency:copy-dependencies -DincludeScope=compile -DoutputDirectory=standalone-onnx/libs -DincludeArtifactIds=onnxruntime`  
+   を実行すると、それぞれの `libs/` を再生成できます。
 
 ---
 
 ### 手動でライブラリを集める場合
 
-Maven が使えない環境で依存 JAR を直接集める必要がある場合は、下表のリンクからダウンロードして `pmml-standalone/libs/` に配置してください（バージョンは必ず一致させる）。
+Maven が使えない環境で依存 JAR を直接集める必要がある場合は、下表のリンクからダウンロードして `standalone-pmml/libs/`（PMML 用）や `standalone-onnx/libs/`（ONNX 用）に配置してください（バージョンは必ず一致させる）。
 
 | ライブラリ | 役割 | ダウンロードリンク |
 | --- | --- | --- |
@@ -279,12 +303,12 @@ Maven が使えない環境で依存 JAR を直接集める必要がある場合
 ## よくある質問
 
 ### Q. 新しいモデルを再学習したい場合は？
-`python3 train.py` を再実行してください。`model/model.pmml`（および `pmml-standalone/model/model.pmml`）が更新されます。必要に応じて `mvn package` で新しいアプリケーション JAR を生成し、実行時は `--model` オプションで最新ファイルを指定します。
+`python3 train.py` を再実行してください。`model/model.pmml`（および `standalone-pmml/model/model.pmml`）と `model/model.onnx`（および `standalone-onnx/model/model.onnx`）が更新されます。必要に応じて `mvn package` で新しいアプリケーション JAR を生成し、実行時は `--model` オプションで最新ファイルを指定します。
 
 ### Q. 別の環境（例: Databricks）で実行したい
-生成された `pmml-demo-1.0-SNAPSHOT.jar` と `model` ディレクトリ（PMML/ONNX ファイル）をアップロードし、Java 実行環境で  
-`java -jar pmml-demo-1.0-SNAPSHOT.jar --model /dbfs/.../model.pmml` または  
-`java -cp pmml-demo-1.0-SNAPSHOT.jar com.example.OnnxPredictor --model /dbfs/.../model.onnx`  
+生成された `pmml-predictor-1.0-SNAPSHOT.jar`（または `onnx-predictor-1.0-SNAPSHOT.jar`）と `model` ディレクトリをアップロードし、  
+`java -jar pmml-predictor-1.0-SNAPSHOT.jar --model /dbfs/.../model.pmml` や  
+`java -jar onnx-predictor-1.0-SNAPSHOT.jar --model /dbfs/.../model.onnx`  
 のように実行してください。依存ライブラリは JAR に含まれているため追加インストールは不要です。
 
 ---
