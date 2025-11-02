@@ -15,17 +15,16 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 
 ```
 .
-├── data/                         # Input CSV(s). Default: Titanic-Dataset.csv
+├── data/                         # Input CSV(s) + sample batches (Titanic-Dataset.csv, sample_batch.txt etc.)
 ├── model/                        # Exported artifacts (eg. titanic_random_forest.pmml)
 ├── models/
 │   └── titanic/                  # Pickled Python pipelines (RandomForest / LightGBM)
 ├── reports/
 │   └── titanic/                  # Evaluation reports & ROC curves generated at training time
-├── titanic/
+├── src/
 │   ├── train_random_forest.py    # Python training + Optuna tuning + evaluation (RandomForest)
 │   ├── train_lightgbm.py         # Python training + evaluation (LightGBM)
-│   ├── export_to_pmml.py         # Convert the trained RandomForest pipeline into PMML
-│   └── sample_batch.txt          # Example batch input for Java inference
+│   └── export_to_pmml.py         # Convert the trained RandomForest pipeline into PMML
 ├── pmml-predictor/               # Maven CLI (fat JAR) for PMML inference
 ├── standalone-pmml/              # PMML inference without Maven (pre-bundled libs)
 └── README.md
@@ -44,7 +43,7 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 2. **Train the RandomForest pipeline**
 
    ```bash
-   python titanic/train_random_forest.py \
+   python src/train_random_forest.py \
      --data data/Titanic-Dataset.csv \
      --test-data data/Titanic-Dataset.csv \
      --tune-sample-size 0 \
@@ -61,7 +60,7 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 3. **Train the LightGBM pipeline** (optional)
 
    ```bash
-   python titanic/train_lightgbm.py \
+   python src/train_lightgbm.py \
      --data data/Titanic-Dataset.csv \
      --test-data data/Titanic-Dataset.csv \
      --tune-sample-size 0 \
@@ -73,10 +72,11 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 4. **Export RandomForest to PMML (for Java)**
 
    ```bash
-   python titanic/export_to_pmml.py
+   python src/export_to_pmml.py
    ```
 
    The script reloads the pickled pipeline, refits it on the full dataset for PMML compatibility, and exports to `model/titanic_random_forest.pmml`.  
+   Maven 版 CLI もスタンドアロン版もこのファイルを参照するように合わせています。  
    (LightGBM は ONNX 変換が必要になるため、Java では PMML 版 RandomForest を利用するのが簡単です。)
 
 ---
@@ -108,14 +108,14 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
    1 female 38 1 0 71.2833 C
    ```
 
-   複数件を一括で推論する場合は上記形式の行を `titanic/sample_batch.txt` のようにファイルへ記述します。
+   複数件を一括で推論する場合は上記形式の行を `data/sample_batch.txt` のようなファイルへ記述します。
 
 3. **PMML モデルで推論を実行**
 
    ```bash
    java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar \
      --model model/titanic_random_forest.pmml \
-     --batch titanic/sample_batch.txt
+     --batch data/sample_batch.txt
    ```
 
    `--model` を省略すると `model/titanic_random_forest.pmml` が自動参照されます。  
@@ -151,7 +151,7 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
    ```bash
    java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar \
      --watch \
-     --batch titanic/sample_batch.txt
+     --batch data/sample_batch.txt
    ```
 
    - 起動直後にバッチの内容を評価し、その後はコンソールにプロンプトが表示されます。  
@@ -162,13 +162,15 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 
    **ホットリロード検証手順の例**
 
-   1. 上記コマンドで watch モードを起動し、別ターミナルで以下を実行:
+   1. 上記コマンドで watch モードを起動する。
+   2. 別ターミナルでモデルを再学習・エクスポートする:
       ```bash
-      python titanic/train_random_forest.py --data data/Titanic-Dataset.csv --test-data data/Titanic-Dataset.csv
-      python titanic/export_to_pmml.py
+      python src/train_random_forest.py --data data/Titanic-Dataset.csv --test-data data/Titanic-Dataset.csv
+      python src/export_to_pmml.py
       ```
-   2. Java 側のコンソールに `Detected change...` → `Model reload succeeded.` が出ればリロード完了。  
-   3. コンソールに新しいサンプルを入力し、更新済みモデルの推論結果を確認します。
+   3. Java のコンソールに `Detected change...` → `Model reload succeeded.` が出ればリロード成功。  
+      失敗した場合はスタックトレースが出るが、そのまま旧モデルで処理が継続する。
+   4. プロンプトに新しいサンプルを入力して、更新済みモデルの出力を確認する。
 
    モデルファイルを差し替えるだけでロックレスに更新されるため、再コンパイル・再起動は不要です。
 
@@ -181,17 +183,36 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 ```bash
 cd standalone-pmml
 javac -cp "libs/*" PMMLPredictor.java
-java -cp ".:libs/*" PMMLPredictor --model ../model/titanic_random_forest.pmml --batch ../titanic/sample_batch.txt
+java -cp ".:libs/*" PMMLPredictor --model ../model/titanic_random_forest.pmml --batch ../data/sample_batch.txt
 ```
 
 （ONNX 版が必要な場合は `standalone-onnx/` を同様に利用できます。）
 
 ---
 
+## 運用パターン別の比較（PMML / ONNX × Maven / Standalone）
+
+| パターン | モデル形式 | 追加バイナリの目安 | 推論速度の傾向 | アルゴリズム対応 | 備考 |
+| --- | --- | --- | --- | --- | --- |
+| Maven CLI + PMML<br>`pmml-predictor` | `titanic_random_forest.pmml` (~7.2MB) | fat JAR 約 9.9MB（JPMML + JAXB + Jackson） | 純 Java 実装。ツリー系は安定して高速 | `sklearn2pmml` がサポートする scikit-learn パイプライン（LightGBM 直接は不可） | `mvn package` で即実行可能。`--watch` でホットリロード対応。 |
+| Maven CLI + ONNX<br>`onnx-predictor` | `titanic_lightgbm.onnx` など | fat JAR 約 90MB（onnxruntime ネイティブライブラリ込み） | ネイティブ最適化で数値演算が得意 | scikit-learn ラッパー、LightGBM、XGBoost など ONNX 互換モデル | モデルを ONNX に変換する専用スクリプトが必要。JAR が大きく CI/CD で注意。 |
+| Standalone + PMML<br>`standalone-pmml` | 同上 | `libs/` 合計 ~10MB（JPMML 関連依存） | Maven 版と同等 | 同上 | 依存 JAR を同梱して配布。`--model` で共通ディレクトリの PMML を指定可能。 |
+| Standalone + ONNX<br>`standalone-onnx` | `*.onnx` | `libs/` 約 89MB（onnxruntime jar + native libs） | Maven 版と同等 | ONNX Converter に準拠 | プラットフォームごとのネイティブライブラリ配布が必要。 |
+
+### 補足
+
+- **モデルサイズ**：Titanic RandomForest の PMML は約 7MB、ONNX はモデル内容（特徴量展開など）によって変動します。
+- **推論速度**：JPMML は純粋な Java で実装されておりツリー系モデルでは十分高速です。ONNX Runtime はネイティブ最適化（SIMD / マルチスレッド）を活用でき、線形代数に強みがあります。
+- **アルゴリズム対応**：PMML は scikit-learn の一部アルゴリズムに限定され、LightGBM を PMML 化するには `jpmml-lightgbm` など追加ツールが必要です。ONNX は scikit-learn、LightGBM、XGBoost など幅広くサポートされます。
+- **依存サイズと配布**：ONNX Runtime は 80〜90MB のネイティブライブラリを含むため Docker イメージ等ではサイズに注意してください。PMML は純 Java 依存で 10MB 前後に収まります。
+- **pickle の併用**：再エクスポートや Python 側での検証に備えて `models/titanic/*.pkl` を残しておく運用を推奨します（ONNX/PMML へは後から変換可能）。
+
+---
+
 ## Q&A / Tips
 
 - **モデルを再学習したら？**  
-  `titanic/train_random_forest.py` を再実行し、新しい `models/titanic/random_forest_pipeline.pkl` を生成してから `titanic/export_to_pmml.py` を流せば PMML を更新できます。Java 側の再ビルドは不要です。
+  `src/train_random_forest.py` を再実行し、新しい `models/titanic/random_forest_pipeline.pkl` を生成してから `src/export_to_pmml.py` を流せば PMML を更新できます。Java 側の再ビルドは不要です。
 
 - **データセットの場所を変えたい**  
   すべてのスクリプトに `--data` / `--test-data` / `--model-path` / `--report-dir` オプションがあります。パスを変更する場合は各オプションを指定してください。

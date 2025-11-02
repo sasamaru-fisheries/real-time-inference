@@ -39,8 +39,8 @@ import org.jpmml.model.PMMLUtil;
  *
  * Examples:
  *   java -jar pmml-predictor-1.0-SNAPSHOT.jar 3 male 22 1 0 7.25 S
- *   java -jar pmml-predictor-1.0-SNAPSHOT.jar --batch titanic/sample_batch.txt
- *   java -jar pmml-predictor-1.0-SNAPSHOT.jar --watch --batch titanic/sample_batch.txt
+ *   java -jar pmml-predictor-1.0-SNAPSHOT.jar --batch data/sample_batch.txt
+ *   java -jar pmml-predictor-1.0-SNAPSHOT.jar --watch --batch data/sample_batch.txt
  */
 public final class PMMLPredictor {
 
@@ -85,11 +85,13 @@ public final class PMMLPredictor {
     }
 
     public static void main(String[] args) throws Exception {
+        // 1. コマンドライン引数を解析し、モデルファイルや入力データを特定する
         ParsedInput parsedInput = parseInput(args);
         Path resolvedModelPath = resolveModelPath(parsedInput.modelPath(), parsedInput.modelExplicit());
 
         Evaluator evaluator;
         try {
+            // 2. PMML ファイルを読み込み、JPMML Evaluator を構築
             evaluator = loadEvaluator(resolvedModelPath);
         } catch (Exception ex) {
             System.err.println("Failed to load PMML model: " + ex.getMessage());
@@ -97,11 +99,14 @@ public final class PMMLPredictor {
             return;
         }
 
+        // 3. watch モードではない場合は単発処理で終了
         if (!parsedInput.watch()) {
             evaluateSamples(evaluator, parsedInput.featureVectors());
             return;
         }
 
+        // 4. watch モードの場合は Evaluator を AtomicReference で管理しつつ、
+        //    WatchService で PMML ファイルの変更を監視する。
         AtomicReference<Evaluator> evaluatorRef = new AtomicReference<>(evaluator);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         startWatcher(resolvedModelPath, evaluatorRef, executor);
@@ -112,6 +117,7 @@ public final class PMMLPredictor {
     }
 
     private static ParsedInput parseInput(String[] args) {
+        // デフォルト値は共有モデルディレクトリ (model/...) を参照する
         Path modelPath = DEFAULT_MODEL_PATH;
         boolean explicitModelPath = false;
         boolean watch = false;
@@ -151,6 +157,7 @@ public final class PMMLPredictor {
             featureVectors.addAll(readBatchFile(batchPath));
         }
         if (featureVectors.isEmpty()) {
+            // 引数・バッチが一切指定されない場合はデフォルトのサンプルを評価する
             featureVectors.add(new LinkedHashMap<>(DEFAULT_FEATURES));
         }
 
@@ -178,7 +185,7 @@ public final class PMMLPredictor {
             pmml = PMMLUtil.unmarshal(is);
         }
         Evaluator evaluator = new ModelEvaluatorBuilder(pmml).build();
-        evaluator.verify();
+        evaluator.verify(); // PMML の整合性をチェック。失敗すれば例外が発生する。
         return evaluator;
     }
 
@@ -348,6 +355,8 @@ public final class PMMLPredictor {
                     Path changed = watchDir.resolve((Path) event.context());
                     try {
                         if (Files.isSameFile(changed, absolute)) {
+                            // WatchService はディレクトリ内の相対パスを返す点に注意。
+                            // 同じファイルかを isSameFile で判定してからリロードする。
                             reloadModel(absolute, evaluatorRef);
                         }
                     } catch (IOException ioex) {

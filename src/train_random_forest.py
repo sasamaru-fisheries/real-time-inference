@@ -1,3 +1,15 @@
+"""Utilities for training, evaluating, and exporting a Titanic RandomForest pipeline.
+
+このファイルは以下の責務を持っています。
+
+1. コマンドライン引数の解釈（`argparse`）。
+2. データ読み込み・前処理パイプラインの構築。
+3. Optuna を用いた簡易ハイパーパラメータ探索。
+4. 学習済みモデルの pickle 保存とレポート（分類レポート、ROC 曲線）の出力。
+
+初心者向けに、なぜこの処理が必要なのかをコード内に丁寧にコメントしています。
+"""
+
 import argparse
 import json
 from pathlib import Path
@@ -20,12 +32,16 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 import matplotlib
 
+# 画像をファイルに保存するだけなので、X サーバの無い環境でも動くようにバックエンドを固定
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
+# ルートパスを計算しておくと、プロジェクト内のどこから実行しても同じ相対パスを参照できる
 BASE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BASE_DIR.parent
+# データ、モデル、レポートのデフォルト出力先。
+# CLI から `--data` 等で上書き可能にして柔軟性を確保するのがベストプラクティス。
 DEFAULT_DATA = ROOT_DIR / "data" / "Titanic-Dataset.csv"
 DEFAULT_TEST_DATA = ROOT_DIR / "data" / "Titanic-Dataset.csv"
 DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "titanic" / "random_forest_pipeline.pkl"
@@ -37,9 +53,21 @@ TARGET = "Survived"
 
 
 def build_pipeline(random_state: int, params: dict) -> Pipeline:
+    """学習で使う前処理 + 推論器のパイプラインを構築する。
+
+    random_state
+        再現性確保のため RandomForest に設定する乱数シード。
+    params
+        Optuna で探索したハイパーパラメータを辞書で受け取る。
+
+    scikit-learn の Pipeline / ColumnTransformer を使うことで、
+    PD.DataFrame の列名を保ったまま、数値とカテゴリ列の処理をまとめて表現できる。
+    """
     numeric_features = ["Age", "SibSp", "Parch", "Fare"]
     categorical_features = ["Pclass", "Sex", "Embarked"]
 
+    # 数値列の欠損には中央値で埋め、スケールを合わせる。
+    # StandardScaler を使うことで学習が安定しやすくなる。
     numeric_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="median")),
@@ -53,6 +81,8 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
         ]
     )
 
+    # ColumnTransformer で列ごとの処理を分岐させる。
+    # こうしておけば PMML / ONNX へエクスポートするときも前処理を丸ごと含められる。
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", numeric_transformer, numeric_features),
@@ -75,6 +105,11 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
 
 
 def load_dataset(path: Path) -> tuple[pd.DataFrame, pd.Series]:
+    """CSV ファイルから特徴量とターゲットを読み込む。
+
+    - 欠損があると RandomForest では学習できないため、まず `TARGET` 列の欠損を落とす。
+    - 以降の処理で列名が失われないよう、`copy()` で明示的に複製してから返す。
+    """
     df = pd.read_csv(path)
     missing_cols = set(FEATURES + [TARGET]) - set(df.columns)
     if missing_cols:
@@ -97,6 +132,7 @@ def evaluate(
     label: str,
     output_dir: Path,
 ) -> None:
+    """検証用データでモデルを評価し、レポートや ROC 曲線を出力する。"""
     preds = model.predict(X_test)
     proba = model.predict_proba(X_test)[:, 1]
     report = classification_report(y_test, preds)
@@ -138,6 +174,11 @@ def evaluate(
 
 
 def parse_args() -> argparse.Namespace:
+    """CLI 引数の定義とパース。
+
+    なるべく値をハードコードせず、CLI から上書きできるようにしておくと
+    スクリプトが再利用しやすくなる。
+    """
     parser = argparse.ArgumentParser(description="Train RandomForest on Titanic dataset.")
     parser.add_argument(
         "--data",
@@ -198,6 +239,11 @@ def tune_hyperparameters(
     n_trials: int,
     sample_size: int,
 ) -> dict:
+    """Optuna を使ってハイパーパラメータを探索する。
+
+    - データセットが大きい場合は `sample_size` でサブセットにして高速化。
+    - 返り値は `build_pipeline` にそのまま渡せる辞書。
+    """
     if sample_size > 0 and len(X) > sample_size:
         X, _, y, _ = train_test_split(
             X,
@@ -242,6 +288,16 @@ def tune_hyperparameters(
 
 
 def main() -> None:
+    """エントリーポイント。
+
+    - 引数読み込み
+    - データロード
+    - ハイパーパラメータ探索
+    - モデル学習
+    - 評価（ROC 曲線やテキストレポートの保存）
+    - pickle 保存
+    の順番で処理する。
+    """
     args = parse_args()
     X_train_full, y_train_full = load_dataset(args.data)
     X_external, y_external = load_dataset(args.test_data)

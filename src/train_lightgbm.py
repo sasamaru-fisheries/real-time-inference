@@ -1,3 +1,15 @@
+"""Train and evaluate a LightGBM pipeline on the Titanic dataset.
+
+PMML では RandomForest を主に利用していますが、LightGBM も参考として残しています。
+このスクリプトでは以下を行います。
+
+* データ読み込みと前処理パイプラインの構築
+* Optuna を使ったラフなハイパーパラメータ探索
+* モデルの pickle 保存と評価レポート出力
+
+ONNX など別形式に変換する際も、このパイプラインをそのまま利用できます。
+"""
+
 import argparse
 import json
 from pathlib import Path
@@ -20,6 +32,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 import matplotlib
 
+# CLI で実行するときにディスプレイが無くても動くように back-end を固定
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -37,12 +50,16 @@ TARGET = "Survived"
 
 
 def build_pipeline(random_state: int, params: dict) -> Pipeline:
+    """LightGBM 用の前処理 + モデルをまとめたパイプラインを作成する。"""
     numeric_features = ["Age", "SibSp", "Parch", "Fare"]
     categorical_features = ["Pclass", "Sex", "Embarked"]
 
+    # 数値列は欠損値のみ扱えば良いので簡素なパイプラインにしている。
     numeric_transformer = Pipeline(
         steps=[("imputer", SimpleImputer(strategy="median"))]
     )
+    # カテゴリ列は頻出値で埋めた後にワンホットエンコード。
+    # LightGBM はカテゴリの整数指定もできるが、ONNX 変換のしやすさを優先してエンコードしている。
     categorical_transformer = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
@@ -75,6 +92,7 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
 
 
 def load_dataset(path: Path) -> tuple[pd.DataFrame, pd.Series]:
+    """RandomForest と同じく、データセットを読み込んでラベルを抽出する。"""
     df = pd.read_csv(path)
     missing_cols = set(FEATURES + [TARGET]) - set(df.columns)
     if missing_cols:
@@ -97,6 +115,7 @@ def evaluate(
     label: str,
     output_dir: Path,
 ) -> None:
+    """LightGBM モデルを評価し、レポート・グラフを出力する。"""
     preds = model.predict(X_test)
     proba = model.predict_proba(X_test)[:, 1]
     report = classification_report(y_test, preds)
@@ -138,6 +157,7 @@ def evaluate(
 
 
 def parse_args() -> argparse.Namespace:
+    """コマンドライン引数の定義。RandomForest 版と揃えている。"""
     parser = argparse.ArgumentParser(description="Train LightGBM on Titanic dataset.")
     parser.add_argument(
         "--data",
@@ -198,6 +218,7 @@ def tune_hyperparameters(
     n_trials: int,
     sample_size: int,
 ) -> dict:
+    """Optuna を使った LightGBM のハイパーパラメータ探索。"""
     if sample_size > 0 and len(X) > sample_size:
         X, _, y, _ = train_test_split(
             X,
@@ -242,6 +263,7 @@ def tune_hyperparameters(
 
 
 def main() -> None:
+    """LightGBM モデルの訓練フロー本体。"""
     args = parse_args()
     X_train_full, y_train_full = load_dataset(args.data)
     X_external, y_external = load_dataset(args.test_data)

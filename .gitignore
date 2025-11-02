@@ -10,3 +10,5 @@ onnx-predictor/target/
 *.onnx
 *.pkl
 *.zip
+*.jar
+.DS_Store
