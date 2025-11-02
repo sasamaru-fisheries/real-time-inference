@@ -178,6 +178,25 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
 
 ## Maven を使わずに推論したい場合
 
+`standalone-pmml` 
+
+cd standalone-pmml
+mvn -q dependency:copy-dependencies \
+  -DincludeGroupIds=org.jpmml,javax.xml.bind,com.fasterxml.jackson.core,org.apache.commons,com.google.guava,com.sun.istack \
+  -DincludeArtifactIds=pmml-evaluator,pmml-model,jaxb-api,jaxb-runtime,jackson-core,jackson-databind,jackson-annotations,commons-math3,guava,failureaccess,istack-commons-runtime,javax.activation-api,txw2 \
+  -DoutputDirectory=libs
+cd ..
+
+`standalone-onnx` 
+
+cd standalone-onnx
+mvn -q dependency:copy-dependencies \
+  -DincludeGroupIds=com.microsoft.onnxruntime \
+  -DincludeArtifactIds=onnxruntime \
+  -DoutputDirectory=libs
+cd ..
+
+
 `standalone-pmml/` には依存ライブラリを含んだ構成を用意しています。
 
 ```bash
