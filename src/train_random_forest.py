@@ -12,9 +12,9 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-import joblib
 import optuna
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -36,6 +36,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from model_export import export_pipeline_to_onnx, export_pipeline_to_pmml
+
 
 # ルートパスを計算しておくと、プロジェクト内のどこから実行しても同じ相対パスを参照できる
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,12 +46,16 @@ ROOT_DIR = BASE_DIR.parent
 # CLI から `--data` 等で上書き可能にして柔軟性を確保するのがベストプラクティス。
 DEFAULT_DATA = ROOT_DIR / "data" / "Titanic-Dataset.csv"
 DEFAULT_TEST_DATA = ROOT_DIR / "data" / "Titanic-Dataset.csv"
-DEFAULT_MODEL_PATH = ROOT_DIR / "models" / "titanic" / "random_forest_pipeline.pkl"
 DEFAULT_REPORT_DIR = ROOT_DIR / "reports" / "titanic" / "random_forest"
+DEFAULT_PMML_PATH = ROOT_DIR / "model" / "titanic_random_forest.pmml"
+DEFAULT_ONNX_PATH = ROOT_DIR / "model" / "titanic_random_forest.onnx"
 
 
 FEATURES = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked"]
 TARGET = "Survived"
+NUMERIC_FEATURES = ["Age", "SibSp", "Parch", "Fare"]
+CATEGORICAL_FEATURES = ["Pclass", "Sex", "Embarked"]
+STRING_FEATURES = list(CATEGORICAL_FEATURES)
 
 
 def build_pipeline(random_state: int, params: dict) -> Pipeline:
@@ -63,9 +69,6 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
     scikit-learn の Pipeline / ColumnTransformer を使うことで、
     PD.DataFrame の列名を保ったまま、数値とカテゴリ列の処理をまとめて表現できる。
     """
-    numeric_features = ["Age", "SibSp", "Parch", "Fare"]
-    categorical_features = ["Pclass", "Sex", "Embarked"]
-
     # 数値列の欠損には中央値で埋め、スケールを合わせる。
     # StandardScaler を使うことで学習が安定しやすくなる。
     numeric_transformer = Pipeline(
@@ -76,7 +79,6 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
     )
     categorical_transformer = Pipeline(
         steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
             ("encoder", OneHotEncoder(handle_unknown="ignore")),
         ]
     )
@@ -85,8 +87,8 @@ def build_pipeline(random_state: int, params: dict) -> Pipeline:
     # こうしておけば PMML / ONNX へエクスポートするときも前処理を丸ごと含められる。
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
+            ("num", numeric_transformer, NUMERIC_FEATURES),
+            ("cat", categorical_transformer, CATEGORICAL_FEATURES),
         ]
     )
 
@@ -118,6 +120,8 @@ def load_dataset(path: Path) -> tuple[pd.DataFrame, pd.Series]:
     df = df.dropna(subset=[TARGET])
     X = df[FEATURES].copy()
     y = df[TARGET].astype(int)
+    for col in CATEGORICAL_FEATURES:
+        X[col] = X[col].astype("string").fillna("missing").astype(str)
     return X, y
 
 
@@ -187,12 +191,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to the Titanic CSV file.",
     )
     parser.add_argument(
-        "--model-path",
-        type=Path,
-        default=DEFAULT_MODEL_PATH,
-        help="Where to store the trained model pipeline.",
-    )
-    parser.add_argument(
         "--test-data",
         type=Path,
         default=DEFAULT_TEST_DATA,
@@ -227,6 +225,28 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_REPORT_DIR,
         help="Directory to store evaluation reports and plots.",
+    )
+    parser.add_argument(
+        "--pmml-path",
+        type=Path,
+        default=DEFAULT_PMML_PATH,
+        help="Where to export the PMML representation of the trained pipeline.",
+    )
+    parser.add_argument(
+        "--onnx-path",
+        type=Path,
+        default=DEFAULT_ONNX_PATH,
+        help="Where to export the ONNX representation of the trained pipeline.",
+    )
+    parser.add_argument(
+        "--skip-pmml",
+        action="store_true",
+        help="Skip exporting the PMML file.",
+    )
+    parser.add_argument(
+        "--skip-onnx",
+        action="store_true",
+        help="Skip exporting the ONNX file.",
     )
     return parser.parse_args()
 
@@ -321,9 +341,28 @@ def main() -> None:
         output_dir=args.report_dir,
     )
 
-    args.model_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(pipeline, args.model_path)
-    print(f"Saved RandomForest pipeline to {args.model_path}")
+    if not args.skip_pmml:
+        export_pipeline_to_pmml(
+            pipeline,
+            X_train_full,
+            y_train_full,
+            features=FEATURES,
+            numeric_features=NUMERIC_FEATURES,
+            target=TARGET,
+            output_path=args.pmml_path,
+        )
+
+    if not args.skip_onnx:
+        try:
+            export_pipeline_to_onnx(
+                pipeline,
+                X_train_full,
+                output_path=args.onnx_path,
+                float_feature_names=NUMERIC_FEATURES,
+                string_feature_names=STRING_FEATURES,
+            )
+        except Exception as exc:
+            print(f"[WARN] Failed to export RandomForest ONNX: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

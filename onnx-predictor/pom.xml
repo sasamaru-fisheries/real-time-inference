@@ -15,8 +15,10 @@
   <dependencies>
     <dependency>
       <groupId>com.microsoft.onnxruntime</groupId>
-      <artifactId>onnxruntime</artifactId>
+      <artifactId>onnxruntime-platform</artifactId>
       <version>1.19.2</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/libs/onnxruntime-platform-1.19.2.jar</systemPath>
     </dependency>
   </dependencies>
 
