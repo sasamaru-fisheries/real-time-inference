@@ -1,5 +1,6 @@
 package com.example;
 
+import ai.onnxruntime.OnnxMap;
 import ai.onnxruntime.OnnxTensor;
 import ai.onnxruntime.OnnxValue;
 import ai.onnxruntime.OrtEnvironment;
@@ -11,38 +12,52 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 
 /**
- * CLI for scoring ONNX models (default: Iris classifier under {@code model/model.onnx}).
+ * CLI for scoring ONNX models (デフォルト: Titanic RandomForest {@code model/titanic_random_forest.onnx}).
  *
  * <p>Usage examples:
  * <pre>
- *   mvn -q -pl onnx-predictor exec:java -Dexec.args="5.1 3.5 1.4 0.2"
+ *   mvn -q -pl onnx-predictor exec:java -Dexec.args="3 male 22 1 0 7.25 S"
  *   mvn -q -pl onnx-predictor exec:java -Dexec.args="--batch data/sample_batch.txt"
- *   java -jar target/onnx-predictor-1.0-SNAPSHOT.jar --model other.onnx 5.9 3.0 5.1 1.8
+ *   java -jar target/onnx-predictor-1.0-SNAPSHOT.jar --model other.onnx 3 male 22 1 0 7.25 S
  * </pre>
  */
 public final class OnnxPredictor {
 
     private static final String MODEL_OPTION = "--model";
     private static final String BATCH_OPTION = "--batch";
-    private static final Path DEFAULT_MODEL_PATH = Path.of("model", "model.onnx");
+    private static final Path DEFAULT_MODEL_PATH = Path.of("model", "titanic_random_forest.onnx");
 
-    private static final String[] FEATURE_ORDER = {
-        "sepal length (cm)",
-        "sepal width (cm)",
-        "petal length (cm)",
-        "petal width (cm)"
+    private static final String[] FEATURE_NAMES = {
+        "Pclass",
+        "Sex",
+        "Age",
+        "SibSp",
+        "Parch",
+        "Fare",
+        "Embarked"
     };
 
+    private static final Set<String> STRING_FEATURES = new LinkedHashSet<>(List.of(
+        "Pclass", "Sex", "Embarked"
+    ));
+
+    private static final Set<String> FLOAT_FEATURES = new LinkedHashSet<>(List.of(
+        "Age", "SibSp", "Parch", "Fare"
+    ));
+
     private static final Map<String, String> CLASS_LABELS = Map.of(
-        "0", "setosa",
-        "1", "versicolor",
-        "2", "virginica"
+        "0", "not_survived",
+        "1", "survived"
     );
 
     private OnnxPredictor() {
@@ -51,28 +66,30 @@ public final class OnnxPredictor {
     public static void main(String[] args) throws Exception {
         ParsedInput parsed = parseInput(args);
         Path modelPath = resolveModelPath(parsed.modelPath(), parsed.modelExplicit());
-        List<float[]> vectors = parsed.featureVectors();
+        List<Map<String, Object>> samples = parsed.samples();
 
         try (OrtEnvironment env = OrtEnvironment.getEnvironment();
              OrtSession session = env.createSession(modelPath.toString(), new OrtSession.SessionOptions())) {
 
-            String inputName = session.getInputNames().iterator().next();
+            for (int i = 0; i < samples.size(); i++) {
+                Map<String, Object> features = samples.get(i);
+                Map<String, OnnxTensor> inputs = buildInputTensors(env, session, features);
 
-            for (int i = 0; i < vectors.size(); i++) {
-                float[] features = vectors.get(i);
-                float[][] batch = new float[][] { features };
-
-                try (OnnxTensor tensor = OnnxTensor.createTensor(env, batch);
-                     RunOptions options = new RunOptions();
-                     OrtSession.Result result = session.run(Map.of(inputName, tensor), options)) {
+                try (RunOptions options = new RunOptions();
+                     OrtSession.Result result = session.run(inputs, options)) {
 
                     PredictionOutputs outputs = extractOutputs(result);
-                    if (vectors.size() > 1) {
+                    if (samples.size() > 1) {
                         System.out.printf("=== Sample %d ===%n", i + 1);
                     }
-                    System.out.println("Input features (order: sepal_length, sepal_width, petal_length, petal_width):");
-                    for (int j = 0; j < FEATURE_ORDER.length; j++) {
-                        System.out.printf(Locale.US, "  %-22s = %.2f%n", FEATURE_ORDER[j], features[j]);
+                    System.out.println("Input features (order: Pclass, Sex, Age, SibSp, Parch, Fare, Embarked):");
+                    for (String feature : FEATURE_NAMES) {
+                        Object value = features.get(feature);
+                        if (value instanceof Number number) {
+                            System.out.printf(Locale.US, "  %-12s = %.2f%n", feature, number.doubleValue());
+                        } else {
+                            System.out.printf("  %-12s = %s%n", feature, value);
+                        }
                     }
                     System.out.println();
                     System.out.printf("Predicted class id: %d%n", outputs.predictedClass());
@@ -83,9 +100,11 @@ public final class OnnxPredictor {
                     for (int j = 0; j < outputs.probabilities().length; j++) {
                         System.out.printf(Locale.US, "  probability(%d)   : %.4f%n", j, outputs.probabilities()[j]);
                     }
-                    if (i < vectors.size() - 1) {
+                    if (i < samples.size() - 1) {
                         System.out.println();
                     }
+                } finally {
+                    closeInputs(inputs);
                 }
             }
         }
@@ -120,26 +139,40 @@ public final class OnnxPredictor {
             }
         }
 
-        List<float[]> vectors = new ArrayList<>();
+        List<Map<String, Object>> samples = new ArrayList<>();
         if (!featureArgs.isEmpty()) {
-            vectors.add(parseFeatures(featureArgs.toArray(String[]::new)));
+            samples.add(parseFeatures(featureArgs.toArray(String[]::new)));
         }
         if (batchPath != null) {
-            vectors.addAll(readBatchFile(batchPath));
+            samples.addAll(readBatchFile(batchPath));
         }
-        if (vectors.isEmpty()) {
-            vectors.add(parseFeatures(new String[] {"5.1", "3.5", "1.4", "0.2"}));
+        if (samples.isEmpty()) {
+            samples.add(parseFeatures(new String[] {"3", "male", "22", "1", "0", "7.25", "S"}));
         }
-        return new ParsedInput(modelPath, vectors, explicitModel);
+        return new ParsedInput(modelPath, samples, explicitModel);
     }
 
-    private static float[] parseFeatures(String[] args) {
-        if (args.length != FEATURE_ORDER.length) {
-            throw new IllegalArgumentException("Expected four values per sample.");
+    private static Map<String, Object> parseFeatures(String[] args) {
+        if (args.length != FEATURE_NAMES.length) {
+            throw new IllegalArgumentException("Expected seven values per sample.");
         }
-        float[] values = new float[FEATURE_ORDER.length];
-        for (int i = 0; i < FEATURE_ORDER.length; i++) {
-            values[i] = Float.parseFloat(args[i]);
+
+        Map<String, Object> values = new LinkedHashMap<>();
+        for (int i = 0; i < FEATURE_NAMES.length; i++) {
+            String feature = FEATURE_NAMES[i];
+            String raw = args[i];
+            if (STRING_FEATURES.contains(feature)) {
+                values.put(feature, raw);
+            } else if (FLOAT_FEATURES.contains(feature)) {
+                try {
+                    values.put(feature, Float.parseFloat(raw));
+                } catch (NumberFormatException ex) {
+                    throw new IllegalArgumentException(
+                        "Expected numeric value for feature '" + feature + "', but got: " + raw, ex);
+                }
+            } else {
+                values.put(feature, raw);
+            }
         }
         return values;
     }
@@ -159,7 +192,7 @@ public final class OnnxPredictor {
             + " and " + parentCandidate.toAbsolutePath());
     }
 
-    private static List<float[]> readBatchFile(Path batchPath) {
+    private static List<Map<String, Object>> readBatchFile(Path batchPath) {
         Path resolved = batchPath;
         if (!Files.exists(resolved)) {
             Path parentCandidate = Path.of("..").resolve(batchPath);
@@ -171,7 +204,7 @@ public final class OnnxPredictor {
             throw new IllegalArgumentException("Batch file not found: " + batchPath);
         }
 
-        List<float[]> vectors = new ArrayList<>();
+        List<Map<String, Object>> samples = new ArrayList<>();
         try {
             for (String line : Files.readAllLines(resolved)) {
                 String trimmed = line.trim();
@@ -179,12 +212,43 @@ public final class OnnxPredictor {
                     continue;
                 }
                 String[] parts = trimmed.split("[,\\s]+");
-                vectors.add(parseFeatures(parts));
+                samples.add(parseFeatures(parts));
             }
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to read batch file: " + batchPath, ex);
         }
-        return vectors;
+        return samples;
+    }
+
+    private static Map<String, OnnxTensor> buildInputTensors(
+        OrtEnvironment env,
+        OrtSession session,
+        Map<String, Object> features
+    ) throws OrtException {
+        Map<String, OnnxTensor> tensors = new LinkedHashMap<>();
+        for (String inputName : session.getInputNames()) {
+            Object value = features.get(inputName);
+            if (value == null) {
+                throw new IllegalArgumentException("Missing feature '" + inputName + "' in input sample.");
+            }
+
+            if (STRING_FEATURES.contains(inputName)) {
+                String[][] data = new String[][] { { value.toString() } };
+                tensors.put(inputName, OnnxTensor.createTensor(env, data));
+            } else if (FLOAT_FEATURES.contains(inputName)) {
+                float floatValue;
+                if (value instanceof Number number) {
+                    floatValue = number.floatValue();
+                } else {
+                    floatValue = Float.parseFloat(value.toString());
+                }
+                float[][] data = new float[][] { { floatValue } };
+                tensors.put(inputName, OnnxTensor.createTensor(env, data));
+            } else {
+                throw new IllegalArgumentException("Unhandled feature type for '" + inputName + "'.");
+            }
+        }
+        return tensors;
     }
 
     private static PredictionOutputs extractOutputs(OrtSession.Result result) throws OrtException {
@@ -250,15 +314,40 @@ public final class OnnxPredictor {
             return array;
         }
         if (rawProbabilities instanceof Map<?, ?> map) {
-            double[] probs = new double[map.size()];
-            int index = 0;
-            for (Entry<?, ?> entry : map.entrySet()) {
-                Object value = entry.getValue();
-                if (value instanceof Number number) {
-                    probs[index++] = number.doubleValue();
+            return convertMapToArray(map);
+        }
+        if (rawProbabilities instanceof List<?> list) {
+            if (list.isEmpty()) {
+                return new double[0];
+            }
+
+            Object first = list.get(0);
+            if (first instanceof Number) {
+                double[] probs = new double[list.size()];
+                for (int i = 0; i < list.size(); i++) {
+                    Object value = list.get(i);
+                    if (value instanceof Number number) {
+                        probs[i] = number.doubleValue();
+                    } else {
+                        throw new IllegalStateException("Mixed probability list types: " + value.getClass());
+                    }
+                }
+                return probs;
+            }
+
+            if (first instanceof OnnxMap onnxMap) {
+                try {
+                    return convertMapToArray(onnxMap.getValue());
+                } catch (OrtException ex) {
+                    throw new IllegalStateException("Failed to extract probabilities from OnnxMap", ex);
                 }
             }
-            return probs;
+
+            if (first instanceof Map<?, ?> nestedMap) {
+                return convertMapToArray(nestedMap);
+            }
+
+            throw new IllegalStateException("Unsupported list element type in probabilities: " + first.getClass());
         }
         throw new IllegalStateException("Unsupported probability tensor type: " + rawProbabilities.getClass());
     }
@@ -271,7 +360,32 @@ public final class OnnxPredictor {
         return result;
     }
 
-    private record ParsedInput(Path modelPath, List<float[]> featureVectors, boolean modelExplicit) { }
+    private static void closeInputs(Map<String, OnnxTensor> inputs) {
+        for (OnnxTensor tensor : inputs.values()) {
+            try {
+                tensor.close();
+            } catch (RuntimeException ignored) {
+                // クローズ時の例外は無視する
+            }
+        }
+    }
+
+    private static double[] convertMapToArray(Map<?, ?> map) {
+        List<Entry<?, ?>> entries = new ArrayList<>(map.entrySet());
+        entries.sort(Comparator.comparing(entry -> entry.getKey().toString()));
+        double[] probs = new double[entries.size()];
+        for (int i = 0; i < entries.size(); i++) {
+            Object value = entries.get(i).getValue();
+            if (value instanceof Number number) {
+                probs[i] = number.doubleValue();
+            } else {
+                throw new IllegalStateException("Unsupported probability map value type: " + value.getClass());
+            }
+        }
+        return probs;
+    }
+
+    private record ParsedInput(Path modelPath, List<Map<String, Object>> samples, boolean modelExplicit) { }
 
     private record PredictionOutputs(long predictedClass, double[] probabilities) { }
 }

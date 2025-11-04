@@ -94,19 +94,8 @@ python src/train_lightgbm.py \
 
 ### ONNX（Maven プロジェクト）
 
-1. OS 依存をなくすため、`onnxruntime-platform-1.19.2.jar` を手元の `libs/` に配置します。
-
-   ```bash
-   (cd standalone-onnx && mvn -q dependency:copy-dependencies \
-     -DincludeGroupIds=com.microsoft.onnxruntime \
-     -DincludeArtifactIds=onnxruntime \
-     -DoutputDirectory=libs \
-     && mv -f libs/onnxruntime-1.19.2.jar libs/onnxruntime-platform-1.19.2.jar)
-
-   cp standalone-onnx/libs/onnxruntime-platform-1.19.2.jar onnx-predictor/libs/
-   ```
-
-2. `onnx-predictor` をビルド
+1. `onnx-predictor` をビルド  
+   Maven がプラットフォームごとの `onnxruntime` 依存を自動取得するため、追加の手作業は不要です。
 
    ```bash
    cd onnx-predictor
@@ -131,8 +120,8 @@ python src/train_lightgbm.py \
 
 ```bash
 (cd standalone-pmml && mvn -q dependency:copy-dependencies \
-  -DincludeGroupIds=org.jpmml,javax.xml.bind,com.fasterxml.jackson.core,org.apache.commons,com.google.guava,com.sun.istack \
-  -DincludeArtifactIds=pmml-evaluator,pmml-model,jaxb-api,jaxb-runtime,jackson-core,jackson-databind,jackson-annotations,commons-math3,guava,failureaccess,istack-commons-runtime,javax.activation-api,txw2 \
+  -DincludeGroupIds=org.jpmml,javax.xml.bind,com.fasterxml.jackson.core,org.apache.commons,com.google.guava,com.sun.istack,org.glassfish.jaxb,javax.activation \
+  -DincludeArtifactIds=pmml-evaluator,pmml-model,jaxb-api,jaxb-runtime,jaxb-impl,jaxb-core,jackson-core,jackson-databind,jackson-annotations,commons-math3,guava,failureaccess,istack-commons-runtime,javax.activation-api,txw2 \
   -DoutputDirectory=libs)
 
 (cd standalone-onnx && mvn -q dependency:copy-dependencies \
@@ -142,6 +131,28 @@ python src/train_lightgbm.py \
   && mv -f libs/onnxruntime-1.19.2.jar libs/onnxruntime-platform-1.19.2.jar)
 ```
 
+#### コンパイルと実行例
+
+**PMML 版**
+
+```bash
+cd standalone-pmml
+javac -cp "libs/*" PMMLPredictor.java
+java -cp ".:libs/*" PMMLPredictor \
+  --model ../model/titanic_random_forest.pmml \
+  --batch ../data/sample_batch.txt
+```
+
+**ONNX 版**
+
+```bash
+cd standalone-onnx
+javac -cp "libs/*" OnnxPredictor.java
+java -cp ".:libs/*" OnnxPredictor \
+  --model ../model/titanic_random_forest.onnx \
+  --batch ../data/sample_batch.txt
+```
+
 ---
 
 ## 運用パターン別の比較
@@ -149,7 +160,7 @@ python src/train_lightgbm.py \
 | パターン | モデル形式 | 追加バイナリ | 特徴 | 備考 |
 | --- | --- | --- | --- | --- |
 | Maven + PMML (`pmml-predictor`) | `titanic_random_forest.pmml` | JAR 約 10MB | 純 Java 実装で軽量 | `--watch` でホットリロード可 |
-| Maven + ONNX (`onnx-predictor`) | `titanic_random_forest.onnx` 等 | JAR 約 90MB（`onnxruntime-platform` 同梱） | ネイティブ最適化で高速 | `libs/onnxruntime-platform-1.19.2.jar` を手動配置 |
+| Maven + ONNX (`onnx-predictor`) | `titanic_random_forest.onnx` 等 | JAR 約 90MB（環境に応じた onnxruntime を自動取得） | ネイティブ最適化で高速 | Maven 依存解決で入手可能 |
 | Standalone + PMML | 同上 | `libs/` 約 10MB | Java ランタイムのみで実行可能 | スクリプトから javac/ java 実行 |
 | Standalone + ONNX | `*.onnx` | `libs/` 約 89MB（`onnxruntime-platform`） | Maven 版と同等 | 配布時に OS 依存が少ない jar を同梱 |
 
@@ -162,6 +173,7 @@ python src/train_lightgbm.py \
 - 旧来の PMML エクスポートスクリプト（`src/export_to_pmml.py`）は撤廃し、学習スクリプトが直接 PMML / ONNX を出力します。
 - ONNX 変換では LightGBM コンバーターを追加登録しているため、`onnxmltools` が必須です。
 - OS ごとのランタイム配布が必要な場合は、`onnxruntime-platform` の jar を別途配布するだけで済みます（ネイティブライブラリ同梱済み）。
+- Maven 版 ONNX CLI は通常の `onnxruntime` を自動解決し、スタンドアロン版のみ `onnxruntime-platform-1.19.2.jar` を手作業で同梱します。
 
 ---
 
