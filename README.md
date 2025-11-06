@@ -1,89 +1,79 @@
-# Titanic Survival Prediction – Python & Java
+# リアルタイム推論パイプライン（Titanic）
 
-This repository trains Titanic survival models in Python and serves them from Java.  
-The typical workflow is:
-
-1. train and evaluate the scikit-learn pipelines on Titanic data;  
-2. export the RandomForest pipeline to PMML for cross-language inference;  
-3. run the Java CLI to score new passengers with the exported model.
-
-Only the Titanic pipeline is maintained (the former Iris sample has been removed).
+このレポジトリは Titanic 乗客データを題材に、Python で学習したモデルを Java から即座に推論できるようにするサンプルプロジェクトです。  
+RandomForest と LightGBM の 2 つのパイプラインを用意しており、学習後は PMML / ONNX 形式にそのまま書き出します。
 
 ---
 
-## Repository Layout
+## レポジトリ構成
 
 ```
 .
-├── data/                         # Input CSV(s). Default: Titanic-Dataset.csv
-├── model/                        # Exported artifacts (eg. titanic_random_forest.pmml)
-├── models/
-│   └── titanic/                  # Pickled Python pipelines (RandomForest / LightGBM)
-├── reports/
-│   └── titanic/                  # Evaluation reports & ROC curves generated at training time
-├── titanic/
-│   ├── train_random_forest.py    # Python training + Optuna tuning + evaluation (RandomForest)
-│   ├── train_lightgbm.py         # Python training + evaluation (LightGBM)
-│   ├── export_to_pmml.py         # Convert the trained RandomForest pipeline into PMML
-│   └── sample_batch.txt          # Example batch input for Java inference
-├── pmml-predictor/               # Maven CLI (fat JAR) for PMML inference
-├── standalone-pmml/              # PMML inference without Maven (pre-bundled libs)
-└── README.md
+├── data/                         # 入力データ（Titanic-Dataset.csv など）
+├── model/                        # エクスポートされた PMML / ONNX
+├── models/                       # （参考）pickle 形式のモデルを保存していた旧ディレクトリ
+├── reports/                      # 学習時に生成するレポート類
+├── pmml-predictor/               # PMML モデルを読み込む Maven CLI
+├── onnx-predictor/               # ONNX モデルを読み込む Maven CLI
+├── standalone-pmml/              # 依存 JAR 同梱の PMML スタンドアロン CLI
+├── standalone-onnx/              # 依存 JAR 同梱の ONNX スタンドアロン CLI
+└── src/                          # Python 学習スクリプト
 ```
 
 ---
 
-## Python Training & Evaluation
+## Python での学習と評価
 
-1. **Install dependencies**
+### 1. 依存関係のインストール
 
-   ```bash
-   python3 -m pip install pandas scikit-learn optuna lightgbm sklearn2pmml matplotlib
-   ```
+```bash
+python -m pip install -r requirements.txt
+```
 
-2. **Train the RandomForest pipeline**
+`requirements.txt` が無い場合は `pyproject.toml` の依存（pandas / scikit-learn / lightgbm / optuna / sklearn2pmml / skl2onnx など）を手動でインストールしてください。
 
-   ```bash
-   python titanic/train_random_forest.py \
-     --data data/Titanic-Dataset.csv \
-     --test-data data/Titanic-Dataset.csv \
-     --tune-sample-size 0 \
-     --report-dir reports/titanic/random_forest
-   ```
+### 2. RandomForest モデルの学習（PMML / ONNX 出力付き）
 
-   - Performs a small Optuna search (1 trial by default) and fits the final model.  
-   - Saves the trained pipeline to `models/titanic/random_forest_pipeline.pkl`.  
-   - Writes evaluation artefacts into `reports/titanic/random_forest/`:
-     - `external_test_classification_report.txt`
-     - `external_test_metrics.json` (accuracy / ROC AUC / support)
-     - `external_test_roc_curve.png`
+```bash
+python src/train_random_forest.py \
+  --data data/Titanic-Dataset.csv \
+  --test-data data/Titanic-Dataset.csv \
+  --tune-sample-size 0 \
+  --report-dir reports/titanic/random_forest
+```
 
-3. **Train the LightGBM pipeline** (optional)
+学習後に自動で以下のファイルが生成されます。
 
-   ```bash
-   python titanic/train_lightgbm.py \
-     --data data/Titanic-Dataset.csv \
-     --test-data data/Titanic-Dataset.csv \
-     --tune-sample-size 0 \
-     --report-dir reports/titanic/lightgbm
-   ```
+- `model/titanic_random_forest.pmml`
+- `model/titanic_random_forest.onnx`
+- ROC 曲線や分類レポート（`reports/titanic/random_forest/` 配下）
 
-   This script stores `models/titanic/lightgbm_pipeline.pkl` and produces matching reports under `reports/titanic/lightgbm/`.
+### 3. LightGBM モデルの学習
 
-4. **Export RandomForest to PMML (for Java)**
+```bash
+python src/train_lightgbm.py \
+  --data data/Titanic-Dataset.csv \
+  --test-data data/Titanic-Dataset.csv \
+  --tune-sample-size 0 \
+  --report-dir reports/titanic/lightgbm
+```
 
-   ```bash
-   python titanic/export_to_pmml.py
-   ```
+こちらも学習後に自動で以下を出力します。
 
-   The script reloads the pickled pipeline, refits it on the full dataset for PMML compatibility, and exports to `model/titanic_random_forest.pmml`.  
-   (LightGBM は ONNX 変換が必要になるため、Java では PMML 版 RandomForest を利用するのが簡単です。)
+- `model/titanic_lightgbm.pmml`
+- `model/titanic_lightgbm.onnx`
+- ROC 曲線や分類レポート（`reports/titanic/lightgbm/` 配下）
+
+※ モデル書き出し先は `--pmml-path` / `--onnx-path` オプションで変更可能です。  
+※ 学習かつエクスポートだけを行いたい場合は `--skip-pmml` / `--skip-onnx` を指定できます。
 
 ---
 
-## Java 推論ワークフロー（PMML）
+## Java CLI での推論
 
-1. **Maven プロジェクトをビルド**
+### PMML（Maven プロジェクト）
+
+1. 依存 JAR（JPMML など）は `mvn clean package` で自動取得できます。
 
    ```bash
    cd pmml-predictor
@@ -91,119 +81,102 @@ Only the Titanic pipeline is maintained (the former Iris sample has been removed
    cd ..
    ```
 
-   生成物: `pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar`
-
-2. **推論用の入力を用意**
-
-   `pmml-predictor` CLI は 7 特徴（数値 + 文字列）を Titanic の順番で受け取ります：
-
-   ```text
-   Pclass Sex Age SibSp Parch Fare Embarked
-   ```
-
-   例 (空白区切りでもカンマ区切りでも可):
-
-   ```text
-   3 male 22 1 0 7.25 S
-   1 female 38 1 0 71.2833 C
-   ```
-
-   複数件を一括で推論する場合は上記形式の行を `titanic/sample_batch.txt` のようにファイルへ記述します。
-
-3. **PMML モデルで推論を実行**
+2. 推論を実行
 
    ```bash
    java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar \
      --model model/titanic_random_forest.pmml \
-     --batch titanic/sample_batch.txt
+     --batch data/sample_batch.txt
    ```
 
-   `--model` を省略すると `model/titanic_random_forest.pmml` が自動参照されます。  
-   `--batch` を省略すればコマンドライン引数で単発推論も可能です（例: `... 3 male 22 1 0 7.25 S`）。
+   - `--watch` を付与すると PMML ファイルを監視し、更新を検知して自動リロードします。
+   - 引数を指定すれば 1 件のみを CLI から直接入力することも可能です。
 
-   出力例:
+### ONNX（Maven プロジェクト）
 
-   ```text
-   Model loaded from: ...
-
-   === Sample 1 ===
-   Input features (Titanic order: Pclass, Sex, Age, SibSp, Parch, Fare, Embarked):
-     Pclass    = 3.0000
-     Sex       = male
-     Age       = 22.0000
-     SibSp     = 1.0000
-     Parch     = 0.0000
-     Fare      = 7.2500
-     Embarked  = S
-
-   Predicted class id: 0
-   Predicted class label: not_survived
-
-   Class probabilities:
-     probability(0)   : 0.8819
-     probability(1)   : 0.1181
-   ```
-
-4. **ホットリロード (watch モード)**
-
-   モデルファイルが更新されたら自動で読み直す場合は `--watch` を付けて起動します。
+1. `onnx-predictor` をビルド  
+   Maven がプラットフォームごとの `onnxruntime` 依存を自動取得するため、追加の手作業は不要です。
 
    ```bash
-   java -jar pmml-predictor/target/pmml-predictor-1.0-SNAPSHOT.jar \
-     --watch \
-     --batch titanic/sample_batch.txt
+   cd onnx-predictor
+   mvn -q clean package
+   cd ..
    ```
 
-   - 起動直後にバッチの内容を評価し、その後はコンソールにプロンプトが表示されます。  
-     `Pclass Sex Age SibSp Parch Fare Embarked` を空白またはカンマで区切って入力すると、その場で推論されます。  
-     `:exit` を入力すると終了します。
-   - `model/titanic_random_forest.pmml` が変更されると自動的に再ロードを試みます。  
-     成功時は「Model reload succeeded」、失敗時はスタックトレース付きで警告が出ます。失敗しても直前のモデルでサービスを継続します。
+3. 推論を実行
 
-   **ホットリロード検証手順の例**
+   ```bash
+   java -jar onnx-predictor/target/onnx-predictor-1.0-SNAPSHOT.jar \
+     --model model/titanic_random_forest.onnx \
+     --batch data/sample_batch.txt
+   ```
 
-   1. 上記コマンドで watch モードを起動し、別ターミナルで以下を実行:
-      ```bash
-      python titanic/train_random_forest.py --data data/Titanic-Dataset.csv --test-data data/Titanic-Dataset.csv
-      python titanic/export_to_pmml.py
-      ```
-   2. Java 側のコンソールに `Detected change...` → `Model reload succeeded.` が出ればリロード完了。  
-   3. コンソールに新しいサンプルを入力し、更新済みモデルの推論結果を確認します。
+   既定では Iris 用の特徴量順になっているため、Titanic モデルを使う場合は入力整形を合わせるか `standalone-onnx/OnnxPredictor.java` を調整してください。
 
-   モデルファイルを差し替えるだけでロックレスに更新されるため、再コンパイル・再起動は不要です。
+### スタンドアロン版（PMML / ONNX）
 
----
+`standalone-pmml`・`standalone-onnx` ディレクトリは Maven を使わずに実行可能です。  
+依存ライブラリをダウンロードした上で、`java -cp ".:libs/*" ...` と実行してください。
 
-## Maven を使わずに推論したい場合
+```bash
+(cd standalone-pmml && mvn -q dependency:copy-dependencies \
+  -DincludeGroupIds=org.jpmml,javax.xml.bind,com.fasterxml.jackson.core,org.apache.commons,com.google.guava,com.sun.istack,org.glassfish.jaxb,javax.activation \
+  -DincludeArtifactIds=pmml-evaluator,pmml-model,jaxb-api,jaxb-runtime,jaxb-impl,jaxb-core,jackson-core,jackson-databind,jackson-annotations,commons-math3,guava,failureaccess,istack-commons-runtime,javax.activation-api,txw2 \
+  -DoutputDirectory=libs)
 
-`standalone-pmml/` には依存ライブラリを含んだ構成を用意しています。
+(cd standalone-onnx && mvn -q dependency:copy-dependencies \
+  -DincludeGroupIds=com.microsoft.onnxruntime \
+  -DincludeArtifactIds=onnxruntime \
+  -DoutputDirectory=libs \
+  && mv -f libs/onnxruntime-1.19.2.jar libs/onnxruntime-platform-1.19.2.jar)
+```
+
+#### コンパイルと実行例
+
+**PMML 版**
 
 ```bash
 cd standalone-pmml
 javac -cp "libs/*" PMMLPredictor.java
-java -cp ".:libs/*" PMMLPredictor --model ../model/titanic_random_forest.pmml --batch ../titanic/sample_batch.txt
+java -cp ".:libs/*" PMMLPredictor \
+  --model ../model/titanic_random_forest.pmml \
+  --batch ../data/sample_batch.txt
 ```
 
-（ONNX 版が必要な場合は `standalone-onnx/` を同様に利用できます。）
+**ONNX 版**
+
+```bash
+cd standalone-onnx
+javac -cp "libs/*" OnnxPredictor.java
+java -cp ".:libs/*" OnnxPredictor \
+  --model ../model/titanic_random_forest.onnx \
+  --batch ../data/sample_batch.txt
+```
 
 ---
 
-## Q&A / Tips
+## 運用パターン別の比較
 
-- **モデルを再学習したら？**  
-  `titanic/train_random_forest.py` を再実行し、新しい `models/titanic/random_forest_pipeline.pkl` を生成してから `titanic/export_to_pmml.py` を流せば PMML を更新できます。Java 側の再ビルドは不要です。
+| パターン | モデル形式 | 追加バイナリ | 特徴 | 備考 |
+| --- | --- | --- | --- | --- |
+| Maven + PMML (`pmml-predictor`) | `titanic_random_forest.pmml` | JAR 約 10MB | 純 Java 実装で軽量 | `--watch` でホットリロード可 |
+| Maven + ONNX (`onnx-predictor`) | `titanic_random_forest.onnx` 等 | JAR 約 90MB（環境に応じた onnxruntime を自動取得） | ネイティブ最適化で高速 | Maven 依存解決で入手可能 |
+| Standalone + PMML | 同上 | `libs/` 約 10MB | Java ランタイムのみで実行可能 | スクリプトから javac/ java 実行 |
+| Standalone + ONNX | `*.onnx` | `libs/` 約 89MB（`onnxruntime-platform`） | Maven 版と同等 | 配布時に OS 依存が少ない jar を同梱 |
 
-- **データセットの場所を変えたい**  
-  すべてのスクリプトに `--data` / `--test-data` / `--model-path` / `--report-dir` オプションがあります。パスを変更する場合は各オプションを指定してください。
+---
 
-- **ホットリロード時のエラー処理は？**  
-  `--watch` モードでは新しい PMML の読み込みに失敗するとスタックトレース付きで警告を出し、直前のモデルを保持したまま処理を継続します。ログを確認しつつ問題を修正し、再度 PMML を上書きしてください。
+## 補足
 
-- **LightGBM を Java で使いたい**  
-  LightGBM パイプラインは pickle (`models/titanic/lightgbm_pipeline.pkl`) に保存されているので、Python で直接利用できます。Java から使いたい場合は別途 ONNX 変換が必要です（本リポジトリでは PMML 版 RandomForest のみサポート）。
+- `data/` 配下には学習・推論に使うサンプルデータを配置しています。行形式の `sample_batch.txt` をそのまま CLI に渡せます。
+- `reports/` フォルダは git ignore に含まれているため、生成されたレポートはコミットされません。
+- 旧来の PMML エクスポートスクリプト（`src/export_to_pmml.py`）は撤廃し、学習スクリプトが直接 PMML / ONNX を出力します。
+- ONNX 変換では LightGBM コンバーターを追加登録しているため、`onnxmltools` が必須です。
+- OS ごとのランタイム配布が必要な場合は、`onnxruntime-platform` の jar を別途配布するだけで済みます（ネイティブライブラリ同梱済み）。
+- Maven 版 ONNX CLI は通常の `onnxruntime` を自動解決し、スタンドアロン版のみ `onnxruntime-platform-1.19.2.jar` を手作業で同梱します。
 
 ---
 
 ## ライセンス
 
-このサンプルは教育目的で提供されています。必要に応じてライセンス表記を追加してご利用ください。
+このリポジトリのコードは MIT ライセンスを想定しています（必要に応じて `LICENSE` ファイルを参照してください）。
